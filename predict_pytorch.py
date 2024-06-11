@@ -8,9 +8,11 @@ import Bio
 import numpy as np
 import pyBigWig as pbw
 import torch
+import train_pytorch
 from Bio import SeqIO
 from sklearn.preprocessing import OrdinalEncoder
-from torch import nn
+
+# from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -244,7 +246,9 @@ def mean_on_index(*args, length=None):
         Result array of the full length, including nans where none of the
         arrays had any values.
     """
-    return apply_on_index(lambda n, *args: sum(args) / n, *args, length=length)
+    return apply_on_index(
+        lambda n, *args: np.divide(sum(*args), n, where=(n != 0)), *args, length=length
+    )
 
 
 def safe_filename(file: Path) -> Path:
@@ -283,6 +287,7 @@ class PredSequenceDatasetRAM(Dataset):
         seq,
         winsize,
         head_interval,
+        n_tracks=1,
         reverse=False,
         stride=1,
         offset=0,
@@ -319,6 +324,7 @@ class PredSequenceDatasetRAM(Dataset):
             )
         self.winsize = winsize
         self.head_interval = head_interval
+        self.n_tracks = n_tracks
         self.reverse = reverse
         self.stride = stride
         self.offset = offset
@@ -377,11 +383,7 @@ class PredSequenceDatasetRAM(Dataset):
         return seq
 
     def reshaper(self, preds, kept_heads_start=None):
-        # Reshape (n_windows, n_heads, 1)
-        # => (n_seqs, n_jumps, slide_length, n_heads)
-        preds = preds.reshape(
-            self.n_seqs, self.n_jumps, self.slide_length, self.n_heads
-        )
+        # Shape (n_windows, n_heads, n_tracks)
         if kept_heads_start is not None:
             # Select only specific heads
             kept_heads_stop = kept_heads_start + self.n_kept_heads
@@ -390,26 +392,34 @@ class PredSequenceDatasetRAM(Dataset):
                     f"kept_head_start ({kept_heads_start}) must be positive "
                     f"and smaller than n_heads - n_kept_heads ({self.n_heads - self.n_kept_heads})"
                 )
-            preds = preds[:, :, :, kept_heads_start:kept_heads_stop]
+            preds = preds[:, kept_heads_start:kept_heads_stop]
         elif self.n_kept_heads != self.n_heads:
             print(f"Keeping only first {self.n_kept_heads} out of {self.n_heads} heads")
-            preds = preds[:, :, :, : self.n_kept_heads]
-
-        # Transpose slide_length and n_heads before flattening them to
-        # get proper sequence order, last dimension is pred_length_per_jump
-        preds = np.transpose(preds, [0, 1, 3, 2])
-        preds = preds.reshape((self.n_seqs, self.n_jumps, -1))
+            preds = preds[:, : self.n_kept_heads]
+        # Reshape (n_windows, n_kept_heads, n_tracks)
+        # => (n_seqs, n_jumps, slide_length, n_kept_heads, n_tracks)
+        preds = preds.reshape(
+            self.n_seqs,
+            self.n_jumps,
+            self.slide_length,
+            self.n_kept_heads,
+            self.n_tracks,
+        )
+        # Transpose slide_length and n_kept_heads before flattening them to
+        # get proper sequence order, second to last dimension is pred_length_per_jump
+        preds = np.transpose(preds, [0, 1, 3, 2, 4])
+        preds = preds.reshape((self.n_seqs, self.n_jumps, -1, self.n_tracks))
         # Seperate last jump to truncate its beginning then put it back
-        first_part = preds[:, :-1, :].reshape(self.n_seqs, -1)  # ndim=2
+        first_part = preds[:, :-1].reshape(self.n_seqs, -1, self.n_tracks)  # ndim=3
         last_part = preds[:, -1, -(self.last_jump // self.stride) :]
         preds = np.concatenate(
             [first_part, last_part], axis=1
-        )  # shape (n_seqs, pred_length)
-        # Put back in original shape, last dimension being pred_length
-        preds = preds.reshape(self.original_shape[:-1] + (-1,))
+        )  # shape (n_seqs, pred_length, n_tracks)
+        # Put back in original shape, second to last dimension being pred_length
+        preds = preds.reshape(self.original_shape[:-1] + (-1, self.n_tracks))
         if self.reverse:
             # Reverse predictions
-            preds = np.flip(preds, axis=-1)
+            preds = np.flip(preds, axis=-2)
         return preds
 
     def get_indices(self, kept_heads_start=None):
@@ -434,138 +444,12 @@ class PredSequenceDatasetRAM(Dataset):
         return positions
 
 
-class MnaseEtienneNetwork(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        self.conv_stack = nn.Sequential(
-            nn.Conv1d(4, 64, 3, padding="same"),
-            nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.BatchNorm1d(64),
-            nn.Dropout(0.2),
-            nn.Conv1d(64, 16, 8, padding="same"),
-            nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.BatchNorm1d(16),
-            nn.Dropout(0.2),
-            nn.Conv1d(16, 80, 8, padding="same"),
-            nn.ReLU(),
-            nn.MaxPool1d(2),
-            nn.BatchNorm1d(80),
-            nn.Dropout(0.2),
-            nn.Flatten(),
-            nn.Linear(80 * 250, 1),
-            nn.ReLU(),
-        )
-
-    def forward(self, x):
-        x = torch.transpose(x, 1, 2)
-        return self.conv_stack(x)
-
-
-class ResidualConcatLayer(nn.Module):
-    def __init__(self, layer):
-        super().__init__()
-        self.layer = layer
-
-    def forward(self, x):
-        return torch.cat([x, self.layer(x)], dim=1)
-
-
-class BassenjiEtienneNetwork(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv_stack = nn.Sequential(
-            self.pooled_conv_wrapper(4, 32, 12, pool_size=8),
-            self.pooled_conv_wrapper(32, 32, 5, pool_size=4),
-            self.pooled_conv_wrapper(32, 32, 5, pool_size=4),
-            self.dilated_conv_wrapper(32, 16, 5, dilation=2),
-            ResidualConcatLayer(self.dilated_conv_wrapper(16, 16, 5, dilation=4)),
-            ResidualConcatLayer(self.dilated_conv_wrapper(32, 16, 5, dilation=8)),
-            ResidualConcatLayer(self.dilated_conv_wrapper(48, 16, 5, dilation=16)),
-            nn.Conv1d(64, 1, 1),
-            nn.ReLU(),
-            nn.Flatten(),
-        )
-
-    def pooled_conv_wrapper(self, in_channels, out_channels, kernel_size, pool_size):
-        return nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, padding="same"),
-            nn.ReLU(),
-            nn.MaxPool1d(pool_size),
-            nn.BatchNorm1d(out_channels),
-            nn.Dropout(0.2),
-        )
-
-    def dilated_conv_wrapper(self, in_channels, out_channels, kernel_size, dilation):
-        return nn.Sequential(
-            nn.Conv1d(
-                in_channels,
-                out_channels,
-                kernel_size,
-                padding="same",
-                dilation=dilation,
-            ),
-            nn.ReLU(),
-            nn.BatchNorm1d(out_channels),
-            nn.Dropout(0.2),
-        )
-
-    def forward(self, x):
-        x = torch.transpose(x, 1, 2)
-        return self.conv_stack(x)
-
-
-class BassenjiMnaseNetwork(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv_stack = nn.Sequential(
-            self.pooled_conv_wrapper(4, 32, 12, pool_size=4),
-            self.pooled_conv_wrapper(32, 32, 5, pool_size=2),
-            self.pooled_conv_wrapper(32, 32, 5, pool_size=2),
-            self.dilated_conv_wrapper(32, 16, 5, dilation=2),
-            ResidualConcatLayer(self.dilated_conv_wrapper(16, 16, 5, dilation=4)),
-            ResidualConcatLayer(self.dilated_conv_wrapper(32, 16, 5, dilation=8)),
-            ResidualConcatLayer(self.dilated_conv_wrapper(48, 16, 5, dilation=16)),
-            nn.Conv1d(64, 1, 1),
-            nn.ReLU(),
-            nn.Flatten(),
-        )
-
-    def pooled_conv_wrapper(self, in_channels, out_channels, kernel_size, pool_size):
-        return nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, padding="same"),
-            nn.ReLU(),
-            nn.MaxPool1d(pool_size),
-            nn.BatchNorm1d(out_channels),
-            nn.Dropout(0.2),
-        )
-
-    def dilated_conv_wrapper(self, in_channels, out_channels, kernel_size, dilation):
-        return nn.Sequential(
-            nn.Conv1d(
-                in_channels,
-                out_channels,
-                kernel_size,
-                padding="same",
-                dilation=dilation,
-            ),
-            nn.ReLU(),
-            nn.BatchNorm1d(out_channels),
-            nn.Dropout(0.2),
-        )
-
-    def forward(self, x):
-        x = torch.transpose(x, 1, 2)
-        return self.conv_stack(x)
-
-
 def predict(
     model,
     seq,
     winsize,
     head_interval,
+    n_tracks=1,
     reverse=False,
     stride=1,
     offset=0,
@@ -579,6 +463,7 @@ def predict(
         seq,
         winsize,
         head_interval,
+        n_tracks=n_tracks,
         reverse=reverse,
         stride=stride,
         offset=offset,
@@ -619,14 +504,16 @@ if __name__ == "__main__":
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     # Load model
-    architectures = {
-        "BassenjiMnaseNetwork": BassenjiMnaseNetwork,
-        "BassenjiEtienneNetwork": BassenjiEtienneNetwork,
-    }
-    args.architecture = architectures[args.architecture]
+    args.architecture = train_pytorch.ARCHITECTURES[args.architecture]
     model = args.architecture().to(args.device)
     model.load_state_dict(torch.load(args.model_file))
     model.eval()
+    output_shape = model(torch.rand(1, args.winsize, 4).to(args.device)).shape
+    if len(output_shape) == 3:
+        args.n_tracks = output_shape[-1]
+    else:
+        args.n_tracks = 1
+    print(f"Model outputs {args.n_tracks} tracks")
 
     # Load fasta
     seq_dict = ordinal_encoder(
@@ -653,24 +540,28 @@ if __name__ == "__main__":
     else:
         strands = [args.strand]
 
-    # Initialize output bigwig
-    filename = safe_filename(
-        Path(
-            args.output_dir,
-            f"preds_{Path(args.model_file).stem}_on_{Path(args.fasta_file).stem}{filename_suff}.bw",
+    # Initialize output bigwigs
+    bw_handles = []
+    for track in range(args.n_tracks):
+        filename = safe_filename(
+            Path(
+                args.output_dir,
+                f"preds_{Path(args.model_file).stem}_on_{Path(args.fasta_file).stem}{filename_suff}_track{track}.bw",
+            )
         )
-    )
-    bw = pbw.open(str(filename), "w")
-    if args.strand == "merge":
-        bw.addHeader([(k, len(v)) for k, v in seq_dict.items()])
-    else:
-        bw.addHeader(
-            [
-                (f"{k}_{strand}", len(v))
-                for k, v in seq_dict.items()
-                for strand in strands
-            ]
-        )
+        bw = pbw.open(str(filename), "w")
+        if args.strand == "merge":
+            bw.addHeader([(k, len(v)) for k, v in seq_dict.items()])
+        else:
+            bw.addHeader(
+                [
+                    (f"{k}_{strand}", len(v))
+                    for k, v in seq_dict.items()
+                    for strand in strands
+                ]
+            )
+        bw_handles.append(bw)
+    # Make predictions
     for chrom, seq in seq_dict.items():
         if args.verbose:
             print(f"Predicting on chromosome {chrom}")
@@ -684,6 +575,7 @@ if __name__ == "__main__":
                 seq,
                 args.winsize,
                 args.head_interval,
+                n_tracks=args.n_tracks,
                 jump_stride=jump_stride,
                 kept_heads_start=kept_heads_start,
                 reverse=(strand == "rev"),
@@ -695,11 +587,17 @@ if __name__ == "__main__":
                 res.append((index, pred))
             else:
                 # Write values immediately
-                bw.addEntries(f"{chrom}_{strand}", index, values=pred, span=1)
+                for track, bw in enumerate(bw_handles):
+                    bw.addEntries(
+                        f"{chrom}_{strand}", index, values=pred[..., track], span=1
+                    )
         if args.strand == "merge":
             # Average forward and reverse predictions
-            pred = mean_on_index(*res)
-            index = np.isfinite(pred).nonzero()[0]
-            pred = pred[index]
-            bw.addEntries(chrom, index, values=pred, span=1)
+            for track, bw in enumerate(bw_handles):
+                pred = mean_on_index(
+                    *[(index, pred[..., track]) for index, pred in res]
+                )
+                index = np.isfinite(pred).nonzero()[0]
+                pred = pred[index]
+                bw.addEntries(chrom, index, values=pred, span=1)
     bw.close()

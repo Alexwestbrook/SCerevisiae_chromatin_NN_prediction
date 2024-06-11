@@ -1,11 +1,12 @@
 #!/bin/env python
 
 import argparse
+import collections
 import datetime
 import json
 import socket
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Tuple, Union
 
 import Bio
 import numpy as np
@@ -15,6 +16,8 @@ from Bio import SeqIO
 from sklearn.preprocessing import OrdinalEncoder
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+
+# torch.autograd.set_detect_anomaly(True)
 
 
 def parsing():
@@ -36,8 +39,9 @@ def parsing():
     )
     parser.add_argument(
         "-l",
-        "--label_file",
+        "--label_files",
         help="Bigwig file containing labels per position in fasta",
+        nargs="+",
         type=str,
         required=True,
     )
@@ -194,12 +198,14 @@ def parsing():
     #     "-da", "--disable_autotune",
     #     action='store_true',
     #     help="Indicates not to use earlystopping.")
-    # parser.add_argument(
-    #     "-p", "--patience",
-    #     help="Number of epochs without improvement to wait before stopping "
-    #          "training (default: %(default)s)",
-    #     default=6,
-    #     type=int)
+    parser.add_argument(
+        "-p",
+        "--patience",
+        help="Number of epochs without improvement to wait before stopping "
+        "training (default: %(default)s)",
+        default=6,
+        type=int,
+    )
     # parser.add_argument(
     #     "-dist", "--distribute",
     #     action='store_true',
@@ -207,18 +213,14 @@ def parsing():
     parser.add_argument(
         "-v",
         "--verbose",
-        help="0 for silent, 1 for progress bar and 2 for single line",
-        default=2,
-        type=int,
+        help="Indicates to show information messages",
+        action="store_true",
     )
     args = parser.parse_args()
     # Check that files exist
-    for argname in ["fasta_file", "model_file"]:
-        filename = vars(args)[argname]
+    for filename in [args.fasta_file] + args.label_files:
         if not Path(filename).is_file():
-            raise ValueError(
-                f"File {filename} does not exist. Please enter a valid {argname}"
-            )
+            raise ValueError(f"File {filename} does not exist.")
     # Format chromosome names
     genome_name = Path(args.fasta_file).stem
     if genome_name == "W303":
@@ -416,7 +418,7 @@ class SequenceDatasetRAM(Dataset):
     def __init__(
         self,
         seq_file,
-        label_file,
+        label_files,
         chroms,
         winsize,
         head_interval,
@@ -433,7 +435,6 @@ class SequenceDatasetRAM(Dataset):
         self.chroms = chroms
         self.winsize = winsize
         self.head_interval = head_interval
-        self.train = train
         self.strand = strand
         self.transform = transform
         self.target_transform = target_transform
@@ -448,26 +449,32 @@ class SequenceDatasetRAM(Dataset):
         if no_seq_found:
             raise ValueError(f"Couldn't find sequence for {no_seq_found}")
         # Load and check labels
-        self.labels_dict = {}
-        label_range = None
-        with pbw.open(label_file) as bw:
-            for i, chrom in enumerate(chroms):
-                length = bw.chroms(chrom)
-                if length is None:
-                    raise ValueError(f"{chrom} not in {label_file}")
-                self.labels_dict[i] = bw.values(chrom, 0, -1, numpy=True)
-                # Determine minimum and maximum values for labels
-                if label_range is None:
-                    label_range = (
-                        np.min(self.labels_dict[i]),
-                        np.max(self.labels_dict[i]),
-                    )
-                else:
-                    label_range = (
-                        min(label_range[0], np.min(self.labels_dict[i])),
-                        max(label_range[1], np.max(self.labels_dict[i])),
-                    )
-        self.label_range = label_range
+        if isinstance(label_files, str):
+            label_files = [label_files]
+        self.labels_dict = {i: [] for i in range(len(chroms))}
+        self.label_ranges = []
+        for label_file in label_files:
+            label_range = None
+            with pbw.open(label_file) as bw:
+                for i, chrom in enumerate(chroms):
+                    length = bw.chroms(chrom)
+                    if length is None:
+                        raise ValueError(f"{chrom} not in {label_file}")
+                    self.labels_dict[i].append(bw.values(chrom, 0, -1, numpy=True))
+                    # Determine minimum and maximum values for labels
+                    if label_range is None:
+                        label_range = (
+                            np.min(self.labels_dict[i]),
+                            np.max(self.labels_dict[i]),
+                        )
+                    else:
+                        label_range = (
+                            min(label_range[0], np.min(self.labels_dict[i])),
+                            max(label_range[1], np.max(self.labels_dict[i])),
+                        )
+            self.label_ranges.append(label_range)
+        for i, chrom in enumerate(chroms):
+            self.labels_dict[i] = np.stack(self.labels_dict[i], axis=1)
         # Encode chromosome ids and nucleotides as integers
         self.seq_dict = ordinal_encoder(
             {i: self.seq_dict[chrom] for i, chrom in enumerate(chroms)}
@@ -482,14 +489,17 @@ class SequenceDatasetRAM(Dataset):
                 N_in_window = moving_sum(seq == 4, winsize).astype(bool)
                 indexes[N_in_window] = np.ma.masked
             if remove0s:
-                full_0_window = moving_sum(self.labels_dict[i] == 0, winsize) == winsize
+                full_0_window = (
+                    moving_sum(np.all(self.labels_dict[i] == 0, axis=-1), winsize)
+                    == winsize
+                )
                 indexes[full_0_window] = np.ma.masked
             indexes = indexes.compressed()
             self.positions.extend(list(zip([i] * len(indexes), indexes)))
         # Initialize weights
         self.weights_dict = {}
         for i, labels in enumerate(self.labels_dict.values()):
-            weights = np.ones(len(labels), dtype=np.int8)
+            weights = np.ones_like(labels, dtype=bool)
             if remove0s:
                 # Weight labels to ignore to 0
                 weights[labels == 0] = 0
@@ -521,27 +531,83 @@ class SequenceDatasetRAM(Dataset):
         return seq, label, weight
 
 
-def collate_samplebalance(batch, n_class=100, range=(0, 1)):
-    seq, label, weight = tuple(np.array(x) for x in zip(*batch))
-    flat_label = label.flatten()
-    flat_weight = weight.flatten()
-    label_eff = flat_label[flat_weight != 0]  # number nonzero weight labels
-    # Divide [0, 1] into bins and determine bin_idx for each label
-    bin_values, bin_edges = np.histogram(label_eff, bins=n_class, range=range)
+def balance_label_weights(
+    label: np.ndarray, has_weight: np.ndarray, n_class=100, label_range=(0, 1)
+):
+    """Balance weights by dividing labels into bins.
+
+    Balancing is done on the flattened array.
+
+    Parameters
+    ----------
+    label : np.ndarray
+        Array of labels to weight
+    has_weight : np.ndarray
+        Boolean mask of same shape as label, indicating where to compute weights.
+        Other locations will have weights of 0.
+    n_class : int, optional
+        Number of classes to divide the range into
+    label_range : tuple, optional
+        Range of the bins for binning labels
+
+    Returns
+    -------
+    np.ndarray
+        Array of balanced weights of same shape as label.
+    """
+    # Flatten input arrays
+    original_shape = label.shape
+    label = label.flatten()
+    has_weight = has_weight.flatten()
+    label_eff = label[has_weight]  # number nonzero weight labels
+    # Divide label range into bins and determine bin_idx for each label
+    bin_values, bin_edges = np.histogram(label_eff, bins=n_class, range=label_range)
     n_class_eff = np.sum(bin_values != 0)
-    bin_idx = np.digitize(flat_label, bin_edges)
+    bin_idx = np.digitize(label, bin_edges)
     bin_idx[bin_idx == n_class + 1] = n_class
     bin_idx -= 1
     # Compute balanced sample weights from bin occupancy
-    new_weight = np.zeros_like(flat_weight, dtype=np.float64)
-    new_weight = np.divide(
+    weight = np.zeros_like(has_weight, dtype=np.float64)
+    return np.divide(
         len(label_eff) / n_class_eff,
         bin_values[bin_idx],
-        out=new_weight,
-        where=flat_weight != 0,
-    )
-    # Reshape as original
-    new_weight = new_weight.reshape(weight.shape)
+        out=weight,
+        where=has_weight,
+    ).reshape(original_shape)
+
+
+def make_iterator(obj, length=1):
+    if isinstance(obj, collections.abc.Iterable):
+        return iter(obj)
+    else:
+        return (obj for i in range(length))
+
+
+def collate_samplebalance(batch, n_class=100, label_range=(0, 1)):
+    seq, label, weight = tuple(np.array(x) for x in zip(*batch))
+    if label.ndim == 3:
+        # shape (batch_size, outputs, tracks)
+        new_weight = np.empty_like(weight)
+        n_classes = make_iterator(n_class, label.shape[-1])
+        label_ranges = make_iterator(label_range, label.shape[-1])
+        for j in range(label.shape[-1]):
+            n_class = next(n_classes)
+            label_range = next(label_ranges)
+            # balance accross batch and outputs
+            new_weight[..., j] = balance_label_weights(
+                label[..., j],
+                weight[..., j] != 0,
+                n_class=n_class,
+                label_range=label_range,
+            ).reshape(weight[..., j].shape)
+    else:
+        # shape (batch_size, outputs)
+        new_weight = balance_label_weights(
+            label,
+            weight != 0,
+            n_class=n_class,
+            label_range=label_range,
+        ).reshape(weight.shape)
     return tuple(torch.Tensor(x) for x in (seq, label, new_weight))
 
 
@@ -582,6 +648,41 @@ class ResidualConcatLayer(nn.Module):
 
     def forward(self, x):
         return torch.cat([x, self.layer(x)], dim=1)
+
+
+class PooledConvLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, pool_size):
+        super().__init__()
+        self.pooled_conv = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, kernel_size, padding="same"),
+            nn.ReLU(),
+            nn.MaxPool1d(pool_size),
+            nn.BatchNorm1d(out_channels),
+            nn.Dropout(0.2),
+        )
+
+    def forward(self, x):
+        return self.pooled_conv(x)
+
+
+class DilatedConvLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, dilation):
+        super().__init__()
+        self.dilated_conv = nn.Sequential(
+            nn.Conv1d(
+                in_channels,
+                out_channels,
+                kernel_size,
+                padding="same",
+                dilation=dilation,
+            ),
+            nn.ReLU(),
+            nn.BatchNorm1d(out_channels),
+            nn.Dropout(0.2),
+        )
+
+    def forward(self, x):
+        return self.dilated_conv(x)
 
 
 class BassenjiEtienneNetwork(nn.Module):
@@ -672,6 +773,27 @@ class BassenjiMnaseNetwork(nn.Module):
         return self.conv_stack(x)
 
 
+class BassenjiMultiNetwork(nn.Module):
+    def __init__(self, n_tracks=2):
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            PooledConvLayer(4, 32, 12, pool_size=4),
+            PooledConvLayer(32, 32, 5, pool_size=2),
+            PooledConvLayer(32, 32, 5, pool_size=2),
+            DilatedConvLayer(32, 16, 5, dilation=2),
+            ResidualConcatLayer(DilatedConvLayer(16, 16, 5, dilation=4)),
+            ResidualConcatLayer(DilatedConvLayer(32, 16, 5, dilation=8)),
+            ResidualConcatLayer(DilatedConvLayer(48, 16, 5, dilation=16)),
+            nn.Conv1d(64, n_tracks, 1),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        x = torch.transpose(x, 1, 2)
+        x = self.conv_stack(x)
+        return torch.transpose(x, 1, 2)
+
+
 def torch_mae_cor(
     output: torch.Tensor, target: torch.Tensor, weight: torch.Tensor = None
 ) -> torch.Tensor:
@@ -689,10 +811,41 @@ def torch_mae_cor(
     sigma_XY = torch.sum(weight * X * Y)
     sigma_X = torch.sum(weight * X * X)
     sigma_Y = torch.sum(weight * Y * Y)
-
     cor = sigma_XY / (torch.sqrt(sigma_X * sigma_Y) + 1e-45)
+
     mae = torch.mean(weight * torch.abs(target - output))
     return (1 - cor) + mae
+
+
+def torch_correlation(x, y):
+    X = x - torch.mean(x)
+    Y = y - torch.mean(y)
+    sigma_XY = torch.sum(X * Y)
+    sigma_X = torch.sum(X * X)
+    sigma_Y = torch.sum(Y * Y)
+
+    return sigma_XY / (torch.sqrt(sigma_X * sigma_Y) + 1e-45)
+
+
+def weighted_mse_loss(output, target, weight):
+    return torch.mean(weight * (output - target) ** 2)
+
+
+def torch_loss_bytrack(
+    output: torch.Tensor,
+    target: torch.Tensor,
+    weight: torch.Tensor = None,
+    loss_fn: Callable = torch_mae_cor,
+) -> torch.Tensor:
+    """Compute loss on multiple tracks."""
+
+    track_losses = []
+    for track in range(output.shape[-1]):
+        if torch.any(weight[..., track] != 0):
+            track_losses.append(
+                loss_fn(output[..., track], target[..., track], weight[..., track])
+            )
+    return torch.stack(track_losses)
 
 
 def train(dataloader, model, loss_fn, optimizer, device, max_batch_per_epoch):
@@ -700,6 +853,7 @@ def train(dataloader, model, loss_fn, optimizer, device, max_batch_per_epoch):
     if max_batch_per_epoch:
         size = min(size, len(next(iter(dataloader))[0]) * max_batch_per_epoch)
     model.train()
+    avg_loss = 0
     for batch, (X, y, w) in enumerate(dataloader):
         if max_batch_per_epoch and batch >= max_batch_per_epoch:
             break
@@ -707,36 +861,56 @@ def train(dataloader, model, loss_fn, optimizer, device, max_batch_per_epoch):
 
         # Compute prediction error
         pred = model(X)
-        loss = loss_fn(pred, y, w)
+        loss = torch_loss_bytrack(pred, y, w, loss_fn).mean()
 
         # Backpropagation
         loss.backward()
+
         optimizer.step()
         optimizer.zero_grad()
 
+        avg_loss += loss.item()
         if batch % 50 == 0:
             loss, current = loss.item(), (batch + 1) * len(X)
             print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+    avg_loss /= batch
+    print(f"Avg train loss: {avg_loss:>8f} \n")
+    return avg_loss
 
 
 def test(dataloader, model, loss_fn, device, max_batch_per_epoch):
     model.eval()
-    test_loss = 0
+    n_tracks = next(iter(dataloader))[1].shape[-1]
+    test_loss_bytrack = torch.zeros(n_tracks).to(device)
+    test_cor_bytrack = torch.zeros(n_tracks).to(device)
     with torch.no_grad():
         for batch, (X, y, w) in enumerate(dataloader):
             if max_batch_per_epoch and batch >= max_batch_per_epoch:
                 break
             X, y, w = X.to(device), y.to(device), w.to(device)
             pred = model(X)
-            test_loss += loss_fn(pred, y, w).item()
-    test_loss /= batch
-    print(f"Test Error: \n Avg loss: {test_loss:>8f} \n")
+            test_loss_bytrack += torch_loss_bytrack(pred, y, w, loss_fn)
+            for track in range(n_tracks):
+                test_cor_bytrack[track] += torch_correlation(
+                    pred[..., track], y[..., track]
+                )
+    test_loss_bytrack /= batch
+    test_cor_bytrack /= batch
+    print(
+        f"Avg test loss: {test_loss_bytrack.mean().item():>8f}\tAvg test correlation: {test_cor_bytrack.mean().item():>8f}\n"
+    )
+    for track in range(n_tracks):
+        print(
+            f"Track {track}\tAvg test loss: {test_loss_bytrack[track]:>8f}\tAvg test correlation: {test_cor_bytrack[track]:>8f}"
+        )
+    print()
+    return test_loss_bytrack, test_cor_bytrack
 
 
 def main(args):
     training_dataRAM = SequenceDatasetRAM(
         args.fasta_file,
-        args.label_file,
+        args.label_files,
         args.chrom_train,
         winsize=args.winsize,
         head_interval=args.head_interval,
@@ -747,7 +921,7 @@ def main(args):
     )
     valid_dataRAM = SequenceDatasetRAM(
         args.fasta_file,
-        args.label_file,
+        args.label_files,
         args.chrom_valid,
         winsize=args.winsize,
         head_interval=args.head_interval,
@@ -757,11 +931,11 @@ def main(args):
         transform=idx_to_onehot,
     )
     if args.balance:
-        print("label range: ", training_dataRAM.label_range)
+        print("label range: ", training_dataRAM.label_ranges)
 
         def collate_fn(batch):
             return collate_samplebalance(
-                batch, args.n_class, training_dataRAM.label_range
+                batch, args.n_class, training_dataRAM.label_ranges
             )
     else:
         collate_fn = None
@@ -780,12 +954,20 @@ def main(args):
     )
 
     # Define model and optimizer
-    model = args.architecture().to(args.device)
+    model = args.architecture(n_tracks=len(args.label_files)).to(args.device)
     optimizer = args.optimizer_ctor(model.parameters(), args.learn_rate)
 
+    model_file = Path(args.output_dir, "model_state.pt")
+    best_valid_loss = np.inf
+    wait = 0
+    log_file = Path(args.output_dir, "epoch_logs.csv")
+    with open(log_file, "w") as f:
+        f.write(
+            "epoch\ttrain_loss\tvalid_loss\tvalid_loss_bytrack\tvalid_cor_bytrack\n"
+        )
     for t in range(args.epochs):
         print(f"Epoch {t+1}\n-------------------------------")
-        train(
+        train_loss = train(
             train_dataloaderRAM,
             model,
             args.loss_fn,
@@ -793,12 +975,31 @@ def main(args):
             device=args.device,
             max_batch_per_epoch=args.max_train,
         )
-        test(valid_dataloaderRAM, model, args.loss_fn, args.device, args.max_valid)
+        valid_loss_bytrack, valid_cor_bytrack = test(
+            valid_dataloaderRAM, model, args.loss_fn, args.device, args.max_valid
+        )
+        valid_loss = valid_loss_bytrack.mean().item()
+        with open(log_file, "a") as f:
+            f.write(
+                f"{t}\t{train_loss:>8f}\t{valid_loss:>8f}\t{valid_loss_bytrack.cpu().numpy()}\t{valid_cor_bytrack.cpu().numpy()}\n"
+            )
+        if valid_loss < best_valid_loss:
+            best_valid_loss = valid_loss
+            torch.save(model.state_dict(), model_file)
+            wait = 0
+        else:
+            wait += 1
+            if wait >= args.patience:
+                break
     print("Done!")
-
-    model_file = Path(args.output_dir, "model_state.pt")
-    torch.save(model.state_dict(), model_file)
     print(f"Saved PyTorch Model State to {model_file}")
+
+
+ARCHITECTURES = {
+    "BassenjiMnaseNetwork": BassenjiMnaseNetwork,
+    "BassenjiEtienneNetwork": BassenjiEtienneNetwork,
+    "BassenjiMultiNetwork": BassenjiMultiNetwork,
+}
 
 
 if __name__ == "__main__":
@@ -832,12 +1033,12 @@ if __name__ == "__main__":
         )
         f.write("\n")
     # Convert to non json serializable objects
-    architectures = {
-        "BassenjiMnaseNetwork": BassenjiMnaseNetwork,
-        "BassenjiEtienneNetwork": BassenjiEtienneNetwork,
+    args.architecture = ARCHITECTURES[args.architecture]
+    losses = {
+        "mae_cor": torch_mae_cor,
+        "mse": weighted_mse_loss,
+        "PoissonNLL": nn.PoissonNLLLoss(),
     }
-    args.architecture = architectures[args.architecture]
-    losses = {"mae_cor": torch_mae_cor}
     args.loss_fn = losses[args.loss_fn]
     optimizer_ctors = {"adam": torch.optim.Adam}
     args.optimizer_ctor = optimizer_ctors[args.optimizer_ctor]
