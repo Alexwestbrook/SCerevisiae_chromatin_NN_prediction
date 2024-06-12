@@ -41,6 +41,15 @@ class ResidualConcatLayer(nn.Module):
         return torch.cat([x, self.layer(x)], dim=1)
 
 
+class ResidualAddLayer(nn.Module):
+    def __init__(self, layer):
+        super().__init__()
+        self.layer = layer
+
+    def forward(self, x):
+        return x + self.layer(x)
+
+
 class PooledConvLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, pool_size):
         super().__init__()
@@ -74,6 +83,34 @@ class DilatedConvLayer(nn.Module):
 
     def forward(self, x):
         return self.dilated_conv(x)
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, dilation):
+        super().__init__()
+        self.dilated_conv = nn.Sequential(
+            nn.GELU(),
+            nn.BatchNorm1d(in_channels),
+            nn.Conv1d(
+                in_channels,
+                out_channels,
+                kernel_size,
+                padding="same",
+                dilation=dilation,
+            ),
+        )
+
+    def forward(self, x):
+        return self.dilated_conv(x)
+
+
+class Crop1d(nn.Module):
+    def __init__(self, left, right):
+        super().__init__()
+        self.slice = slice(left, -right)
+
+    def forward(self, x):
+        return x[..., self.slice]
 
 
 class BassenjiEtienneNetwork(nn.Module):
@@ -185,8 +222,72 @@ class BassenjiMultiNetwork(nn.Module):
         return torch.transpose(x, 1, 2)
 
 
+class BassenjiMultiNetwork2(nn.Module):
+    def __init__(self, n_tracks=2):
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            PooledConvLayer(4, 64, 12, pool_size=4),
+            PooledConvLayer(64, 64, 5, pool_size=2),
+            PooledConvLayer(64, 64, 5, pool_size=2),
+            DilatedConvLayer(64, 32, 5, dilation=2),
+            ResidualConcatLayer(DilatedConvLayer(32, 32, 5, dilation=4)),
+            ResidualConcatLayer(DilatedConvLayer(64, 32, 5, dilation=8)),
+            ResidualConcatLayer(DilatedConvLayer(96, 32, 5, dilation=16)),
+            nn.Conv1d(128, n_tracks, 1),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        x = torch.transpose(x, 1, 2)
+        x = self.conv_stack(x)
+        return torch.transpose(x, 1, 2)
+
+
+class OriginalBassenjiMultiNetwork(nn.Module):
+    def __init__(self, n_tracks=2):
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            ConvBlock(4, 24, 12, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(24, 32, 5, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(32, 32, 5, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(32, 32, 5, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(32, 32, 5, 1),
+            ResidualAddLayer(
+                nn.Sequential(
+                    ConvBlock(32, 16, 3, 4), ConvBlock(16, 32, 1, 1), nn.Dropout(0.3)
+                )
+            ),
+            ResidualAddLayer(
+                nn.Sequential(
+                    ConvBlock(32, 16, 3, 8), ConvBlock(16, 32, 1, 1), nn.Dropout(0.3)
+                )
+            ),
+            ResidualAddLayer(
+                nn.Sequential(
+                    ConvBlock(32, 16, 3, 16), ConvBlock(16, 32, 1, 1), nn.Dropout(0.3)
+                )
+            ),
+            Crop1d(8, 8),
+            ConvBlock(32, 64, 1, 1),
+            nn.Dropout(0.05),
+            nn.Conv1d(64, n_tracks, 1),
+            nn.Softplus(),
+        )
+
+    def forward(self, x):
+        x = torch.transpose(x, 1, 2)
+        x = self.conv_stack(x)
+        return torch.transpose(x, 1, 2)
+
+
 ARCHITECTURES = {
     "BassenjiMnaseNetwork": BassenjiMnaseNetwork,
     "BassenjiEtienneNetwork": BassenjiEtienneNetwork,
     "BassenjiMultiNetwork": BassenjiMultiNetwork,
+    "BassenjiMultiNetwork2": BassenjiMultiNetwork2,
+    "OriginalBassenjiMultiNetwork": OriginalBassenjiMultiNetwork,
 }
