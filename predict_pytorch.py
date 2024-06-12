@@ -2,15 +2,15 @@
 
 import argparse
 from pathlib import Path
-from typing import Dict, List, Union
 
+# from typing import Dict, List, Union
 import Bio
+import models
 import numpy as np
 import pyBigWig as pbw
 import torch
 import train_pytorch
 from Bio import SeqIO
-from sklearn.preprocessing import OrdinalEncoder
 
 # from torch import nn
 from torch.utils.data import DataLoader, Dataset
@@ -53,6 +53,13 @@ def parsing():
         help="Name of the model architecture",
         type=str,
         required=True,
+    )
+    parser.add_argument(
+        "-nt",
+        "--n_tracks",
+        help="Number of tracks predicted by the model (default: %(default)s)",
+        type=int,
+        default=1,
     )
     parser.add_argument(
         "-c",
@@ -140,48 +147,6 @@ def parsing():
         elif genome_name == "W303_Mmmyco":
             args.chroms = [f"chr{c}" if c != "Mmmyco" else c for c in args.chroms]
     return args
-
-
-def ordinal_encoder(
-    inp: Union[Dict[str, str], List[str], str, Bio.Seq.Seq],
-) -> Union[Dict[str, np.ndarray], List[np.ndarray], np.ndarray]:
-    # Format input
-    if isinstance(inp, list):
-        seqs = inp
-    elif isinstance(inp, dict):
-        seqs = list(inp.values())
-    else:
-        seqs = inp
-    # Encode sequences
-    encoder = OrdinalEncoder(
-        handle_unknown="use_encoded_value", unknown_value=4, dtype=np.int8
-    )
-    encoder.fit(np.array(list("ACGT")).reshape((-1, 1)))
-    seqs = [
-        encoder.transform(np.array(list(seq)).reshape((-1, 1))).ravel() for seq in seqs
-    ]
-    # Format output
-    if isinstance(inp, dict):
-        seqs = dict(zip(inp.keys(), seqs))
-    elif not isinstance(inp, list):
-        seqs = seqs[0]
-    return seqs
-
-
-def idx_to_onehot(idx: np.ndarray[int], dtype: type = np.float32) -> np.ndarray:
-    return np.eye(5, dtype=dtype)[:, :-1][idx]
-
-
-def RC_idx(idx: np.ndarray[int]) -> np.ndarray[int]:
-    # Copy data array before modification
-    idx = idx.copy()
-    idx[idx == 0] = -1
-    idx[idx == 3] = 0
-    idx[idx == -1] = 3
-    idx[idx == 1] = -1
-    idx[idx == 2] = 1
-    idx[idx == -1] = 2
-    return np.flip(idx, axis=-1)
 
 
 def apply_on_index(func, *args, length=None, neutral=0):
@@ -292,7 +257,7 @@ class PredSequenceDatasetRAM(Dataset):
         stride=1,
         offset=0,
         jump_stride=None,
-        transform=idx_to_onehot,
+        transform=train_pytorch.idx_to_onehot,
     ):
         # Check winsize, head_interval, stride, offset and jump_stride compatibilities
         if winsize <= 0:
@@ -336,7 +301,7 @@ class PredSequenceDatasetRAM(Dataset):
 
         if reverse:
             # Reverse complement the sequences
-            seq = RC_idx(seq)
+            seq = train_pytorch.RC_idx(seq)
         # Last position where a window can be taken
         last_valid_pos = seq.shape[-1] - winsize
         # Last position where a full slide of window can be taken
@@ -504,19 +469,13 @@ if __name__ == "__main__":
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     # Load model
-    args.architecture = train_pytorch.ARCHITECTURES[args.architecture]
-    model = args.architecture().to(args.device)
+    args.architecture = models.ARCHITECTURES[args.architecture]
+    model = args.architecture(args.n_tracks).to(args.device)
     model.load_state_dict(torch.load(args.model_file))
     model.eval()
-    output_shape = model(torch.rand(1, args.winsize, 4).to(args.device)).shape
-    if len(output_shape) == 3:
-        args.n_tracks = output_shape[-1]
-    else:
-        args.n_tracks = 1
-    print(f"Model outputs {args.n_tracks} tracks")
 
     # Load fasta
-    seq_dict = ordinal_encoder(
+    seq_dict = train_pytorch.ordinal_encoder(
         {
             res.id: res.seq
             for res in SeqIO.parse(args.fasta_file, "fasta")
