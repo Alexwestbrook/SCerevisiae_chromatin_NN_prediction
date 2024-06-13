@@ -243,6 +243,28 @@ class BassenjiMultiNetwork2(nn.Module):
         return torch.transpose(x, 1, 2)
 
 
+class BassenjiMultiNetworkCrop(nn.Module):
+    def __init__(self, n_tracks=2):
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            PooledConvLayer(4, 32, 12, pool_size=4),
+            PooledConvLayer(32, 32, 5, pool_size=2),
+            PooledConvLayer(32, 32, 5, pool_size=2),
+            DilatedConvLayer(32, 16, 5, dilation=2),
+            ResidualConcatLayer(DilatedConvLayer(16, 16, 5, dilation=4)),
+            ResidualConcatLayer(DilatedConvLayer(32, 16, 5, dilation=8)),
+            ResidualConcatLayer(DilatedConvLayer(48, 16, 5, dilation=16)),
+            Crop1d(8, 8),
+            nn.Conv1d(64, n_tracks, 1),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        x = torch.transpose(x, 1, 2)
+        x = self.conv_stack(x)
+        return torch.transpose(x, 1, 2)
+
+
 class OriginalBassenjiMultiNetwork(nn.Module):
     def __init__(self, n_tracks=2):
         super().__init__()
@@ -284,10 +306,93 @@ class OriginalBassenjiMultiNetwork(nn.Module):
         return torch.transpose(x, 1, 2)
 
 
+class OriginalBassenjiMultiNetwork2(nn.Module):
+    def __init__(self, n_tracks=2):
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            ConvBlock(4, 24, 12, 1),
+            nn.MaxPool1d(4),
+            ConvBlock(24, 32, 5, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(32, 32, 5, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(32, 32, 5, 1),
+            ResidualAddLayer(
+                nn.Sequential(
+                    ConvBlock(32, 16, 3, 4), ConvBlock(16, 32, 1, 1), nn.Dropout(0.3)
+                )
+            ),
+            ResidualAddLayer(
+                nn.Sequential(
+                    ConvBlock(32, 16, 3, 8), ConvBlock(16, 32, 1, 1), nn.Dropout(0.3)
+                )
+            ),
+            ResidualAddLayer(
+                nn.Sequential(
+                    ConvBlock(32, 16, 3, 16), ConvBlock(16, 32, 1, 1), nn.Dropout(0.3)
+                )
+            ),
+            Crop1d(8, 8),
+            ConvBlock(32, 64, 1, 1),
+            nn.Dropout(0.05),
+            nn.Conv1d(64, n_tracks, 1),
+            nn.Softplus(),
+        )
+
+    def forward(self, x):
+        x = torch.transpose(x, 1, 2)
+        x = self.conv_stack(x)
+        return torch.transpose(x, 1, 2)
+
+
+class OriginalBassenjiMultiNetworkNoCrop(nn.Module):
+    def __init__(self, n_tracks=2):
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            ConvBlock(4, 24, 12, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(24, 32, 5, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(32, 32, 5, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(32, 32, 5, 1),
+            nn.MaxPool1d(2),
+            ConvBlock(32, 32, 5, 1),
+            ResidualAddLayer(
+                nn.Sequential(
+                    ConvBlock(32, 16, 3, 4), ConvBlock(16, 32, 1, 1), nn.Dropout(0.3)
+                )
+            ),
+            ResidualAddLayer(
+                nn.Sequential(
+                    ConvBlock(32, 16, 3, 8), ConvBlock(16, 32, 1, 1), nn.Dropout(0.3)
+                )
+            ),
+            ResidualAddLayer(
+                nn.Sequential(
+                    ConvBlock(32, 16, 3, 16), ConvBlock(16, 32, 1, 1), nn.Dropout(0.3)
+                )
+            ),
+            # Crop1d(8, 8),
+            ConvBlock(32, 64, 1, 1),
+            nn.Dropout(0.05),
+            nn.Conv1d(64, n_tracks, 1),
+            nn.Softplus(),
+        )
+
+    def forward(self, x):
+        x = torch.transpose(x, 1, 2)
+        x = self.conv_stack(x)
+        return torch.transpose(x, 1, 2)
+
+
 ARCHITECTURES = {
     "BassenjiMnaseNetwork": BassenjiMnaseNetwork,
     "BassenjiEtienneNetwork": BassenjiEtienneNetwork,
     "BassenjiMultiNetwork": BassenjiMultiNetwork,
     "BassenjiMultiNetwork2": BassenjiMultiNetwork2,
     "OriginalBassenjiMultiNetwork": OriginalBassenjiMultiNetwork,
+    "OriginalBassenjiMultiNetwork2": OriginalBassenjiMultiNetwork2,
+    "OriginalBassenjiMultiNetworkNoCrop": OriginalBassenjiMultiNetworkNoCrop,
+    "BassenjiMultiNetworkCrop": BassenjiMultiNetworkCrop,
 }

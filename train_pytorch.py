@@ -14,6 +14,7 @@ import numpy as np
 import pyBigWig as pbw
 import torch
 from Bio import SeqIO
+from scipy.signal import convolve
 from sklearn.preprocessing import OrdinalEncoder
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
@@ -98,6 +99,13 @@ def parsing():
         "(default: %(default)s)",
         default=16,
         type=int,
+    )
+    parser.add_argument(
+        "-crop",
+        "--head_crop",
+        help="Number of heads to crop on left and right side of window (default: %(default)s)",
+        type=int,
+        default=0,
     )
     parser.add_argument(
         "-lr",
@@ -423,6 +431,7 @@ class SequenceDatasetRAM(Dataset):
         chroms,
         winsize,
         head_interval,
+        head_crop=0,
         strand="both",
         removeNs=True,
         remove0s=True,
@@ -436,6 +445,12 @@ class SequenceDatasetRAM(Dataset):
         self.chroms = chroms
         self.winsize = winsize
         self.head_interval = head_interval
+        head_indices = np.arange(0, winsize, head_interval)
+        if head_crop > 0:
+            head_indices = head_indices[head_crop:-head_crop]
+        self.head_mask = np.zeros(winsize, dtype=bool)
+        self.head_mask[head_indices] = True
+        self.n_heads = np.sum(self.head_mask)
         self.strand = strand
         self.transform = transform
         self.target_transform = target_transform
@@ -490,9 +505,15 @@ class SequenceDatasetRAM(Dataset):
                 N_in_window = moving_sum(seq == 4, winsize).astype(bool)
                 indexes[N_in_window] = np.ma.masked
             if remove0s:
+                full_0_position = np.all(self.labels_dict[i] == 0, axis=-1)
+                # convolve will flip the second array, convert to int for integer output
                 full_0_window = (
-                    moving_sum(np.all(self.labels_dict[i] == 0, axis=-1), winsize)
-                    == winsize
+                    convolve(
+                        full_0_position,
+                        self.head_mask[::-1].astype(int),
+                        mode="valid",
+                    )
+                    == self.n_heads
                 )
                 indexes[full_0_window] = np.ma.masked
             indexes = indexes.compressed()
@@ -512,23 +533,20 @@ class SequenceDatasetRAM(Dataset):
     def __getitem__(self, idx):
         chrom, pos = self.positions[idx]
         seq = self.seq_dict[chrom][pos : pos + self.winsize]
+        label = self.labels_dict[chrom][pos : pos + self.winsize]
+        weight = self.weights_dict[chrom][pos : pos + self.winsize]
         if (self.strand == "both" and self.rng.random(1) > 0.5) or self.strand == "rev":
             # Take reverse sequence
             seq = RC_idx(seq)
-            label = self.labels_dict[chrom][
-                pos + self.winsize - 1 : pos - 1
-                if pos > 0
-                else None : -self.head_interval
-            ].copy()
+            label = label[self.head_mask[::-1]][::-1].copy()
+            weight = weight[self.head_mask[::-1]][::-1].copy()
         else:
-            label = self.labels_dict[chrom][
-                pos : pos + self.winsize : self.head_interval
-            ]
+            label = label[self.head_mask]
+            weight = weight[self.head_mask]
         if self.transform:
             seq = self.transform(seq)
         if self.target_transform:
             label = self.target_transform(label)
-        weight = self.weights_dict[chrom][pos : pos + self.winsize : self.head_interval]
         return seq, label, weight
 
 
@@ -732,6 +750,7 @@ def main(args):
         args.chrom_train,
         winsize=args.winsize,
         head_interval=args.head_interval,
+        head_crop=args.head_crop,
         strand=args.strand,
         remove0s=args.remove0s,
         removeNs=args.removeNs,
@@ -743,6 +762,7 @@ def main(args):
         args.chrom_valid,
         winsize=args.winsize,
         head_interval=args.head_interval,
+        head_crop=args.head_crop,
         strand=args.strand,
         remove0s=args.remove0s,
         removeNs=args.removeNs,
