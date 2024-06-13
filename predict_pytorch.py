@@ -94,6 +94,13 @@ def parsing():
         type=int,
     )
     parser.add_argument(
+        "-crop",
+        "--head_crop",
+        help="Number of heads to crop on left and right side of window (default: %(default)s)",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
         "-mid",
         "--middle",
         help="Indicates to use only middle heads for prediction",
@@ -252,6 +259,7 @@ class PredSequenceDatasetRAM(Dataset):
         seq,
         winsize,
         head_interval,
+        head_crop=0,
         n_tracks=1,
         reverse=False,
         stride=1,
@@ -275,28 +283,34 @@ class PredSequenceDatasetRAM(Dataset):
             raise ValueError(
                 f"offset ({offset}) must be positive and smaller than stride ({stride})"
             )
-        if jump_stride is None:
-            jump_stride = winsize
-        elif (
-            jump_stride <= 0
-            or jump_stride > winsize
-            or jump_stride % head_interval != 0
-        ):
-            raise ValueError(
-                f"jump_stride {jump_stride} must be positive, "
-                f"smaller than winsize ({winsize}) "
-                f"and a multiple of head_interval ({head_interval})"
-            )
         self.winsize = winsize
         self.head_interval = head_interval
+        self.head_crop = head_crop
         self.n_tracks = n_tracks
         self.reverse = reverse
         self.stride = stride
         self.offset = offset
-        self.jump_stride = jump_stride
         self.transform = transform
-        self.n_heads = winsize // head_interval
         self.slide_length = head_interval // stride
+        if head_crop < 0 or head_crop >= (winsize // head_interval) / 2:
+            raise ValueError(
+                f"head_crop ({head_crop}) must be positive and smaller than half the number of heads ({winsize // head_interval})"
+            )
+        self.n_heads = winsize // head_interval - 2 * head_crop
+        prediction_size = winsize - 2 * head_crop * head_interval
+        if jump_stride is None:
+            jump_stride = prediction_size
+        elif (
+            jump_stride <= 0
+            or jump_stride > prediction_size
+            or jump_stride % head_interval != 0
+        ):
+            raise ValueError(
+                f"jump_stride {jump_stride} must be positive, "
+                f"smaller than prediction size ({prediction_size}) "
+                f"and a multiple of head_interval ({head_interval})"
+            )
+        self.jump_stride = jump_stride
         self.n_kept_heads = jump_stride // head_interval
 
         if reverse:
@@ -388,19 +402,15 @@ class PredSequenceDatasetRAM(Dataset):
         return preds
 
     def get_indices(self, kept_heads_start=None):
-        if self.head_interval is not None:
-            pred_start = 0
-            pred_stop = self.head_interval - 1
-            if kept_heads_start is not None:
-                pred_start += kept_heads_start * self.head_interval
-                pred_stop += (
-                    self.n_heads - self.n_kept_heads - kept_heads_start
-                ) * self.head_interval
-            elif self.n_kept_heads != self.n_heads:
-                pred_stop += self.n_kept_heads * self.head_interval
-        else:
-            pred_start = self.winsize // 2
-            pred_stop = self.winsize // 2
+        pred_start = self.head_crop * self.head_interval
+        pred_stop = self.head_interval - 1 + self.head_crop * self.head_interval
+        if kept_heads_start is not None:
+            pred_start += kept_heads_start * self.head_interval
+            pred_stop += (
+                self.n_heads - self.n_kept_heads - kept_heads_start
+            ) * self.head_interval
+        elif self.n_kept_heads != self.n_heads:
+            pred_stop += self.n_kept_heads * self.head_interval
         positions = np.arange(
             pred_start + self.offset, self.original_shape[-1] - pred_stop, self.stride
         )
@@ -414,6 +424,7 @@ def predict(
     seq,
     winsize,
     head_interval,
+    head_crop=0,
     n_tracks=1,
     reverse=False,
     stride=1,
@@ -428,6 +439,7 @@ def predict(
         seq,
         winsize,
         head_interval,
+        head_crop=head_crop,
         n_tracks=n_tracks,
         reverse=reverse,
         stride=stride,
@@ -486,8 +498,8 @@ if __name__ == "__main__":
     # Determine prediction options
     filename_suff = ""
     if args.middle:
-        jump_stride = args.winsize // 2
-        kept_heads_start = args.winsize // (4 * args.head_interval)
+        jump_stride = args.winsize // 2 - args.head_crop * args.head_interval
+        kept_heads_start = args.winsize // (4 * args.head_interval) - args.head_crop
         filename_suff += "_mid"
     else:
         jump_stride = None
@@ -534,6 +546,7 @@ if __name__ == "__main__":
                 seq,
                 args.winsize,
                 args.head_interval,
+                head_crop=args.head_crop,
                 n_tracks=args.n_tracks,
                 jump_stride=jump_stride,
                 kept_heads_start=kept_heads_start,
