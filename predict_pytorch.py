@@ -9,7 +9,6 @@ import models
 import numpy as np
 import pyBigWig as pbw
 import torch
-import train_pytorch
 import utils
 from Bio import SeqIO
 from torch import nn
@@ -173,7 +172,7 @@ class PredSequenceDatasetRAM(Dataset):
         stride: int = 1,
         offset: int = 0,
         jump_stride: int = None,
-        transform: Callable = train_pytorch.idx_to_onehot,
+        transform: Callable = utils.idx_to_onehot,
     ) -> None:
         # Check winsize, head_interval, stride, offset and jump_stride compatibilities
         if winsize <= 0:
@@ -223,7 +222,7 @@ class PredSequenceDatasetRAM(Dataset):
 
         if reverse:
             # Reverse complement the sequences
-            seq = train_pytorch.RC_idx(seq)
+            seq = utils.RC_idx(seq)
         # Last position where a window can be taken
         last_valid_pos = seq.shape[-1] - winsize
         # Last position where a full slide of window can be taken
@@ -395,7 +394,7 @@ if __name__ == "__main__":
     model.eval()
 
     # Load fasta
-    seq_dict = train_pytorch.ordinal_encoder(
+    seq_dict = utils.ordinal_encoder(
         {
             res.id: res.seq
             for res in SeqIO.parse(args.fasta_file, "fasta")

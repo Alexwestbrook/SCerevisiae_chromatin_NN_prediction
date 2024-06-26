@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Tuple, Union
 
 import Bio
 import numpy as np
+from Bio import Seq
 from sklearn.preprocessing import OrdinalEncoder
 
 
