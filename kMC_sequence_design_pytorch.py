@@ -445,36 +445,6 @@ def all_mutations(seqs, seen_bases, mutfree_pos=None):
     return mutated, mut_energy
 
 
-def np_idx_to_one_hot(idx, order="ACGT", extradims=None):
-    """Convert array of indexes into one-hot in np format.
-
-    Parameters
-    ----------
-    idx : ndarray
-        Array of indexes into 'ACGT'
-    order : str, default='ACGT'
-        String representation of the order in which to encode bases. Default
-        value of 'ACGT' means that A has the representation with 1 in first
-        position, C with 1 in second position, etc...
-    extradims : int or list of int
-        Extra dimensions to give to the one_hot, which by default is of shape
-        idx.shape + (4,). If extradims is an array there will be an error.
-
-    Returns
-    -------
-    ndarray
-        Array with same shape as idx, in one-hot format.
-    """
-    assert len(order) == 4 and set(order) == set("ACGT")
-    converter = np.zeros((4, 4), dtype=bool)
-    for i, c in enumerate("ACGT"):
-        converter[i, order.find(c)] = 1
-    one_hot = converter[idx]
-    if extradims is not None:
-        one_hot = np.expand_dims(one_hot, axis=extradims)
-    return one_hot
-
-
 def repeat_along_diag(a, r):
     """Construct a matrix by repeating a sub_matrix along the diagonal.
 
