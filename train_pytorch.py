@@ -1,34 +1,39 @@
 #!/bin/env python
 
 import argparse
-import collections
 import datetime
 import json
 import socket
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Tuple, Union
+from typing import Callable, List, Tuple
 
 import Bio
 import models
 import numpy as np
 import pyBigWig as pbw
 import torch
+import utils
 from Bio import SeqIO
+from numpy.typing import ArrayLike
 from scipy.signal import convolve
-from sklearn.preprocessing import OrdinalEncoder
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 # torch.autograd.set_detect_anomaly(True)
 
 
-def parsing():
+def parsing() -> argparse.Namespace:
     """
     Parse the command-line arguments.
 
-    Arguments
-    ---------
+    Parameters
+    ----------
     python command-line
+
+    Returns
+    -------
+    argparse.Namespace
+        Namespace with all arguments as attributes
     """
     # Declaration of expexted arguments
     parser = argparse.ArgumentParser()
@@ -244,201 +249,22 @@ def parsing():
     return args
 
 
-def ordinal_encoder(
-    inp: Union[Dict[str, str], List[str], str, Bio.Seq.Seq],
-) -> Union[Dict[str, np.ndarray], List[np.ndarray], np.ndarray]:
-    # Format input
-    if isinstance(inp, list):
-        seqs = inp
-    elif isinstance(inp, dict):
-        seqs = list(inp.values())
-    else:
-        seqs = inp
-    # Encode sequences
-    encoder = OrdinalEncoder(
-        handle_unknown="use_encoded_value", unknown_value=4, dtype=np.int8
-    )
-    encoder.fit(np.array(list("ACGT")).reshape((-1, 1)))
-    seqs = [
-        encoder.transform(np.array(list(seq)).reshape((-1, 1))).ravel() for seq in seqs
-    ]
-    # Format output
-    if isinstance(inp, dict):
-        seqs = dict(zip(inp.keys(), seqs))
-    elif not isinstance(inp, list):
-        seqs = seqs[0]
-    return seqs
-
-
-def idx_to_onehot(idx: np.ndarray[int], dtype: type = np.float32) -> np.ndarray:
-    return np.eye(5, dtype=dtype)[:, :-1][idx]
-
-
-def RC_idx(idx: np.ndarray[int]) -> np.ndarray[int]:
-    # Copy data array before modification
-    idx = idx.copy()
-    idx[idx == 0] = -1
-    idx[idx == 3] = 0
-    idx[idx == -1] = 3
-    idx[idx == 1] = -1
-    idx[idx == 2] = 1
-    idx[idx == -1] = 2
-    return np.flip(idx, axis=-1)
-
-
-def slicer_on_axis(
-    arr: np.ndarray,
-    slc: Union[slice, Iterable[slice]],
-    axis: Union[None, int, Iterable[int]] = None,
-) -> Tuple[slice]:
-    """Build slice of array along specified axis.
-
-    This function can be used to build slices from unknown axis parameter.
-
-    Parameters
-    ----------
-    arr: ndarray
-        Input array
-    slc: slice or iterable of slices
-        Slices of the array to take.
-    axis: None or int or iterable of ints
-        Axis along which to perform slicing. The default (None) is to take slices along first len(`slc`) dimensions.
-
-    Returns
-    -------
-    tuple of slices
-        Full tuple of slices to use to slice array
-
-    Examples
-    --------
-    >>> arr = np.arange(24).reshape(2, 3, 4)
-    >>> arr
-    array([[[ 0,  1,  2,  3],
-            [ 4,  5,  6,  7],
-            [ 8,  9, 10, 11]],
-
-           [[12, 13, 14, 15],
-            [16, 17, 18, 19],
-            [20, 21, 22, 23]]])
-    >>> arr[slicer_on_axis(arr, slice(1, 3), axis=-1)]  # simple slice on last axis
-    array([[[ 1,  2],
-            [ 5,  6],
-            [ 9, 10]],
-
-           [[13, 14],
-            [17, 18],
-            [21, 22]]])
-    >>> for axis, res in enumerate([arr[1:], arr[:, 1:], arr[:, :, 1:]]):  # unknown axis parameter
-    >>>     print(np.all(arr[slicer_on_axis(arr, slice(1, None), axis=axis)] == res))
-    True
-    True
-    True
-    >>> arr[slicer_on_axis(arr, slice(None, -1))]  # no axis parameter
-    array([[[ 0,  1,  2,  3],
-            [ 4,  5,  6,  7],
-            [ 8,  9, 10, 11]]])
-    >>> arr[slicer_on_axis(arr, [slice(None, -1), slice(1, 3)], axis=[0, 2])]  # multiple slices and axis
-    array([[[ 1,  2],
-            [ 5,  6],
-            [ 9, 10]]])
-    >>> arr[slicer_on_axis(arr, [slice(None, -1), slice(1, 3)])]  # multiple slices without axis parameter
-    array([[[ 4,  5,  6,  7],
-            [ 8,  9, 10, 11]]])
-    >>> arr[slicer_on_axis(arr, slice(1, None), axis=[1, 2])]  # single slice on multiple axis
-    array([[[ 5,  6,  7],
-            [ 9, 10, 11]],
-
-           [[17, 18, 19],
-            [21, 22, 23]]])
-    """
-    full_slice = [slice(None)] * arr.ndim
-    if isinstance(slc, slice):
-        if axis is None:
-            axis = 0
-        if isinstance(axis, int):
-            full_slice[axis] = slc
-        else:
-            for ax in axis:
-                full_slice[ax] = slc
-    else:
-        if axis is None:
-            axis = list(range(len(slc)))
-        elif not isinstance(axis, Iterable):
-            raise ValueError("if slc is an iterable, axis must be an iterable or None")
-        elif len(axis) != len(slc):
-            raise ValueError("axis and slc must have same length")
-        for s, ax in zip(slc, axis):
-            if full_slice[ax] != slice(None):
-                raise ValueError("Can't set slice on same axis twice")
-            full_slice[ax] = s
-    return tuple(full_slice)
-
-
-def moving_sum(arr: np.ndarray, n: int, axis: Union[None, int] = None) -> np.ndarray:
-    """Compute moving sum of array
-
-    Parameters
-    ----------
-    arr: ndarray
-        Input array
-    n: int
-        Length of window to compute sum on, must be greater than 0
-    axis: None or int, optional
-        Axis along which the moving sum is computed, the default (None) is to compute the moving sum over the flattened array.
-
-    Returns
-    -------
-    ndarray
-        Array of moving sum, with size along `axis` reduced by `n`-1.
-
-    Examples
-    --------
-    >>> moving_sum(np.arange(10), n=2)
-    array([ 1,  3,  5,  7,  9, 11, 13, 15, 17])
-    >>> arr = np.arange(24).reshape(2, 3, 4)
-    >>> moving_sum(arr, n=2, axis=-1)
-    array([[[ 1,  3,  5],
-            [ 9, 11, 13],
-            [17, 19, 21]],
-
-           [[25, 27, 29],
-            [33, 35, 37],
-            [41, 43, 45]]])
-    """
-    if n <= 0:
-        raise ValueError(f"n must be greater than 0, but is equal to {n}")
-    elif axis is None and n > arr.size:
-        raise ValueError(
-            f"Can't compute moving_sum of {n} values on flattened array with length {arr.size}"
-        )
-    elif axis is not None and n > arr.shape[axis]:
-        raise ValueError(
-            f"Can't compute moving_sum of {n} values on axis {axis} with length {arr.shape[axis]}"
-        )
-    res = np.cumsum(arr, axis=axis)
-    res[slicer_on_axis(res, slice(n, None), axis=axis)] = (
-        res[slicer_on_axis(res, slice(n, None), axis=axis)]
-        - res[slicer_on_axis(res, slice(None, -n), axis=axis)]
-    )
-    return res[slicer_on_axis(res, slice(n - 1, None), axis=axis)]
-
-
 class SequenceDatasetRAM(Dataset):
     def __init__(
         self,
-        seq_file,
-        label_files,
-        chroms,
-        winsize,
-        head_interval,
-        head_crop=0,
-        strand="both",
-        removeNs=True,
-        remove0s=True,
-        transform=idx_to_onehot,
-        target_transform=None,
-        rng=np.random.default_rng(),
-    ):
+        seq_file: str,
+        label_files: List[str],
+        chroms: List[str],
+        winsize: int,
+        head_interval: int,
+        head_crop: int = 0,
+        strand: str = "both",
+        removeNs: bool = True,
+        remove0s: bool = True,
+        transform: Callable = utils.idx_to_onehot,
+        target_transform: Callable = None,
+        rng: np.random.Generator = np.random.default_rng(),
+    ) -> None:
         # Remove duplicate chromosomes
         if len(set(chroms)) != len(chroms):
             chroms = list(set(chroms))
@@ -492,7 +318,7 @@ class SequenceDatasetRAM(Dataset):
         for i, chrom in enumerate(chroms):
             self.labels_dict[i] = np.stack(self.labels_dict[i], axis=1)
         # Encode chromosome ids and nucleotides as integers
-        self.seq_dict = ordinal_encoder(
+        self.seq_dict = utils.ordinal_encoder(
             {i: self.seq_dict[chrom] for i, chrom in enumerate(chroms)}
         )
         # Extract valid positions
@@ -502,7 +328,7 @@ class SequenceDatasetRAM(Dataset):
             indexes[-winsize + 1 :] = np.ma.masked
             if removeNs:
                 # Remove windows containing an N
-                N_in_window = moving_sum(seq == 4, winsize).astype(bool)
+                N_in_window = utils.moving_sum(seq == 4, winsize).astype(bool)
                 indexes[N_in_window] = np.ma.masked
             if remove0s:
                 full_0_position = np.all(self.labels_dict[i] == 0, axis=-1)
@@ -527,17 +353,17 @@ class SequenceDatasetRAM(Dataset):
                 weights[labels == 0] = 0
             self.weights_dict[i] = weights
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.positions)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         chrom, pos = self.positions[idx]
         seq = self.seq_dict[chrom][pos : pos + self.winsize]
         label = self.labels_dict[chrom][pos : pos + self.winsize]
         weight = self.weights_dict[chrom][pos : pos + self.winsize]
         if (self.strand == "both" and self.rng.random(1) > 0.5) or self.strand == "rev":
             # Take reverse sequence
-            seq = RC_idx(seq)
+            seq = utils.RC_idx(seq)
             label = label[self.head_mask[::-1]][::-1].copy()
             weight = weight[self.head_mask[::-1]][::-1].copy()
         else:
@@ -551,8 +377,11 @@ class SequenceDatasetRAM(Dataset):
 
 
 def balance_label_weights(
-    label: np.ndarray, has_weight: np.ndarray, n_class=100, label_range=(0, 1)
-):
+    label: np.ndarray,
+    has_weight: np.ndarray,
+    n_class: int = 100,
+    label_range: Tuple[float, float] = (0.0, 1.0),
+) -> np.ndarray:
     """Balance weights by dividing labels into bins.
 
     Balancing is done on the flattened array.
@@ -595,20 +424,17 @@ def balance_label_weights(
     ).reshape(original_shape)
 
 
-def make_iterator(obj, length=1):
-    if isinstance(obj, collections.abc.Iterable):
-        return iter(obj)
-    else:
-        return (obj for i in range(length))
-
-
-def collate_samplebalance(batch, n_class=100, label_range=(0, 1)):
+def collate_samplebalance(
+    batch: Tuple[ArrayLike, ArrayLike, ArrayLike],
+    n_class: int = 100,
+    label_range: Tuple[float, float] = (0.0, 1.0),
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     seq, label, weight = tuple(np.array(x) for x in zip(*batch))
     if label.ndim == 3:
         # shape (batch_size, outputs, tracks)
         new_weight = np.empty_like(weight)
-        n_classes = make_iterator(n_class, label.shape[-1])
-        label_ranges = make_iterator(label_range, label.shape[-1])
+        n_classes = utils.make_iterator(n_class, label.shape[-1])
+        label_ranges = utils.make_iterator(label_range, label.shape[-1])
         for j in range(label.shape[-1]):
             n_class = next(n_classes)
             label_range = next(label_ranges)
@@ -653,7 +479,7 @@ def torch_mae_cor(
     return (1 - cor) + mae
 
 
-def torch_correlation(x, y):
+def torch_correlation(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     X = x - torch.mean(x)
     Y = y - torch.mean(y)
     sigma_XY = torch.sum(X * Y)
@@ -663,7 +489,9 @@ def torch_correlation(x, y):
     return sigma_XY / (torch.sqrt(sigma_X * sigma_Y) + 1e-45)
 
 
-def weighted_mse_loss(output, target, weight):
+def weighted_mse_loss(
+    output: torch.Tensor, target: torch.Tensor, weight: torch.Tensor
+) -> torch.Tensor:
     return torch.mean(weight * (output - target) ** 2)
 
 
@@ -684,7 +512,14 @@ def torch_loss_bytrack(
     return torch.stack(track_losses)
 
 
-def train(dataloader, model, loss_fn, optimizer, device, max_batch_per_epoch):
+def train(
+    dataloader: DataLoader,
+    model: nn.Module,
+    loss_fn: Callable,
+    optimizer: torch.optim.Optimizer,
+    device: str,
+    max_batch_per_epoch: int,
+) -> float:
     size = len(dataloader.dataset)
     if max_batch_per_epoch:
         size = min(size, len(next(iter(dataloader))[0]) * max_batch_per_epoch)
@@ -714,7 +549,13 @@ def train(dataloader, model, loss_fn, optimizer, device, max_batch_per_epoch):
     return avg_loss
 
 
-def test(dataloader, model, loss_fn, device, max_batch_per_epoch):
+def test(
+    dataloader: DataLoader,
+    model: nn.Module,
+    loss_fn: Callable,
+    device: str,
+    max_batch_per_epoch: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     model.eval()
     n_tracks = next(iter(dataloader))[1].shape[-1]
     test_loss_bytrack = torch.zeros(n_tracks).to(device)
@@ -743,7 +584,7 @@ def test(dataloader, model, loss_fn, device, max_batch_per_epoch):
     return test_loss_bytrack, test_cor_bytrack
 
 
-def main(args):
+def main(args: argparse.Namespace) -> None:
     training_dataRAM = SequenceDatasetRAM(
         args.fasta_file,
         args.label_files,
@@ -754,7 +595,7 @@ def main(args):
         strand=args.strand,
         remove0s=args.remove0s,
         removeNs=args.removeNs,
-        transform=idx_to_onehot,
+        transform=utils.idx_to_onehot,
     )
     valid_dataRAM = SequenceDatasetRAM(
         args.fasta_file,
@@ -766,7 +607,7 @@ def main(args):
         strand=args.strand,
         remove0s=args.remove0s,
         removeNs=args.removeNs,
-        transform=idx_to_onehot,
+        transform=utils.idx_to_onehot,
     )
     if args.balance:
         print("label range: ", training_dataRAM.label_ranges)

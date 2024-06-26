@@ -2,27 +2,32 @@
 
 import argparse
 from pathlib import Path
+from typing import Callable, Tuple
 
-# from typing import Dict, List, Union
 import Bio
 import models
 import numpy as np
 import pyBigWig as pbw
 import torch
 import train_pytorch
+import utils
 from Bio import SeqIO
-
-# from torch import nn
+from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 
-def parsing():
+def parsing() -> argparse.Namespace:
     """
     Parse the command-line arguments.
 
-    Arguments
-    ---------
+    Parameters
+    ----------
     python command-line
+
+    Returns
+    -------
+    argparse.Namespace
+        Namespace with all arguments as attributes
     """
     # Declaration of expexted arguments
     parser = argparse.ArgumentParser()
@@ -156,117 +161,20 @@ def parsing():
     return args
 
 
-def apply_on_index(func, *args, length=None, neutral=0):
-    """Applies a function on arrays specified as indices and values.
-
-    Parameters
-    ----------
-    func : callable
-        Function to compute on arrays, must take the number of values as first
-        argument, then as many arrays as provided in args.
-    args : tuple of tuple of arrays
-        Each argument represents an array, it must be a tuple
-        (indices, values) for each array. Indices must be 1D, values can be
-        multi-dimensional, in which case indices will be taken along the last
-        axis.
-    length : int, default=None
-        Length of the output array. If None, the smallest possible length is
-        inferred from the indices in args.
-    neutral : int, default=0
-        Neutral element for the desired operation. This function requires that
-        func has a neutral element.
-
-    Returns
-    -------
-    ndarray
-        Result array of the full length, including nans where none of the
-        arrays had any values.
-    """
-    idxes, vals = zip(*args)
-    if length is None:
-        length = np.max([np.max(idx) for idx in idxes]) + 1
-    n_per_pos = np.zeros((1, length))
-    newvals = []
-    for idx, val in args:
-        val2D = val.reshape(-1, val.shape[-1])
-        newval = np.full((len(val2D), length), neutral, dtype=val.dtype)
-        newval[:, idx] = val2D
-        n_per_pos[0, idx] += 1
-        newvals.append(newval)
-    res = func(n_per_pos, *newvals)
-    res = np.where(n_per_pos == 0, np.nan, res)
-    return res.reshape(vals[0].shape[:-1] + (-1,))
-
-
-def mean_on_index(*args, length=None):
-    """Computes the mean of arrays specified as indices and values.
-
-    Parameters
-    ----------
-    args : tuple of tuple of arrays
-        Each argument represents an array, it must be a tuple
-        (indices, values) for each array. Indices must be 1D, values can be
-        multi-dimensional, in which case indices will be taken along the last
-        axis.
-    length : int, default=None
-        Length of the output array. If None, the smallest possible length is
-        inferred from the indices in args.
-
-    Returns
-    -------
-    ndarray
-        Result array of the full length, including nans where none of the
-        arrays had any values.
-    """
-    return apply_on_index(
-        lambda n, *args: np.divide(sum(*args), n, where=(n != 0)), *args, length=length
-    )
-
-
-def safe_filename(file: Path) -> Path:
-    """Make sure file can be build without overriding an other.
-
-    If file already exists, returns a new filename with a number in between
-    parenthesis. If the parent of the file doesn't exist, it is created.
-
-    Raises
-    ------
-    FileExistsError
-        If one of the parents of the file to create is an existing file
-    """
-    file = Path(file)
-    # Build parent directories if needed
-    if not file.parent.is_dir():
-        print("Building parent directories")
-        file.parent.mkdir(parents=True)
-    # Change filename if it already exists
-    if file.exists():
-        original_file = file
-        file_dups = 0
-        while file.exists():
-            file_dups += 1
-            file = Path(
-                file.parent, original_file.stem + f"({file_dups})" + file.suffix
-            )
-            # python3.9: file.with_stem(original_file.stem + f'({file_dups})')
-        print(f"{original_file} exists, changing filename to {file}")
-    return file
-
-
 class PredSequenceDatasetRAM(Dataset):
     def __init__(
         self,
-        seq,
-        winsize,
-        head_interval,
-        head_crop=0,
-        n_tracks=1,
-        reverse=False,
-        stride=1,
-        offset=0,
-        jump_stride=None,
-        transform=train_pytorch.idx_to_onehot,
-    ):
+        seq: np.ndarray,
+        winsize: int,
+        head_interval: int,
+        head_crop: int = 0,
+        n_tracks: int = 1,
+        reverse: bool = False,
+        stride: int = 1,
+        offset: int = 0,
+        jump_stride: int = None,
+        transform: Callable = train_pytorch.idx_to_onehot,
+    ) -> None:
         # Check winsize, head_interval, stride, offset and jump_stride compatibilities
         if winsize <= 0:
             raise ValueError(f"winsize ({winsize}) must be non-negative")
@@ -351,17 +259,17 @@ class PredSequenceDatasetRAM(Dataset):
         self.original_shape = seq.shape
         self.seq = seq.ravel()
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.positions)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> np.ndarray:
         pos = self.positions[idx]
         seq = self.seq[pos : pos + self.winsize]
         if self.transform:
             seq = self.transform(seq)
         return seq
 
-    def reshaper(self, preds, kept_heads_start=None):
+    def reshaper(self, preds: np.ndarray, kept_heads_start: int = None) -> np.ndarray:
         # Shape (n_windows, n_heads, n_tracks)
         if kept_heads_start is not None:
             # Select only specific heads
@@ -401,7 +309,7 @@ class PredSequenceDatasetRAM(Dataset):
             preds = np.flip(preds, axis=-2)
         return preds
 
-    def get_indices(self, kept_heads_start=None):
+    def get_indices(self, kept_heads_start: int = None) -> np.ndarray:
         pred_start = self.head_crop * self.head_interval
         pred_stop = self.head_interval - 1 + self.head_crop * self.head_interval
         if kept_heads_start is not None:
@@ -420,21 +328,21 @@ class PredSequenceDatasetRAM(Dataset):
 
 
 def predict(
-    model,
-    seq,
-    winsize,
-    head_interval,
-    head_crop=0,
-    n_tracks=1,
-    reverse=False,
-    stride=1,
-    offset=0,
-    jump_stride=None,
-    kept_heads_start=None,
-    batch_size=1024,
-    num_workers=4,
-    verbose=True,
-):
+    model: nn.Module,
+    seq: np.ndarray,
+    winsize: int,
+    head_interval: int,
+    head_crop: int = 0,
+    n_tracks: int = 1,
+    reverse: bool = False,
+    stride: int = 1,
+    offset: int = 0,
+    jump_stride: int = None,
+    kept_heads_start: int = None,
+    batch_size: int = 1024,
+    num_workers: int = 4,
+    verbose: bool = True,
+) -> Tuple[np.ndarray, np.ndarray]:
     pred_dataset = PredSequenceDatasetRAM(
         seq,
         winsize,
@@ -514,7 +422,7 @@ if __name__ == "__main__":
     # Initialize output bigwigs
     bw_handles = []
     for track in range(args.n_tracks):
-        filename = safe_filename(
+        filename = utils.safe_filename(
             Path(
                 args.output_dir,
                 f"preds_{Path(args.model_file).stem}_on_{Path(args.fasta_file).stem}{filename_suff}_track{track}.bw",
@@ -566,7 +474,7 @@ if __name__ == "__main__":
         if args.strand == "merge":
             # Average forward and reverse predictions
             for track, bw in enumerate(bw_handles):
-                pred = mean_on_index(
+                pred = utils.mean_on_index(
                     *[(index, pred[..., track]) for index, pred in res]
                 )
                 index = np.isfinite(pred).nonzero()[0]

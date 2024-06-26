@@ -5,6 +5,7 @@ import json
 import socket
 import time
 from pathlib import Path
+from typing import Any, List, Tuple, Union
 
 import models
 import numpy as np
@@ -12,15 +13,22 @@ import pandas as pd
 import predict_pytorch
 import torch
 from matplotlib import pyplot as plt
+from numpy.typing import ArrayLike
+from torch import nn
 
 
-def parsing():
+def parsing() -> argparse.Namespace:
     """
     Parse the command-line arguments.
 
-    Arguments
-    ---------
+    Parameters
+    ----------
     python command-line
+
+    Returns
+    -------
+    argparse.Namespace
+        Namespace with all arguments as attributes
     """
     # Declaration of expexted arguments
     parser = argparse.ArgumentParser()
@@ -363,7 +371,7 @@ def parsing():
     return args
 
 
-def GC_energy(seqs, target_gc):
+def GC_energy(seqs: np.ndarray, target_gc: float) -> np.ndarray:
     """Compute GC energy for each sequence in an array.
 
     The GC_energy is computed as `abs(gc - target_gc)`
@@ -386,7 +394,9 @@ def GC_energy(seqs, target_gc):
     )
 
 
-def all_mutations(seqs, seen_bases, mutfree_pos=None):
+def all_mutations(
+    seqs: np.ndarray, seen_bases: np.ndarray, mutfree_pos: np.ndarray = None
+) -> Tuple[np.ndarray, np.ndarray]:
     """Perform all possible mutations and associate each its mutation energy.
 
     Mutation energy of a mutation X -> Y is defined as the number of times Y
@@ -401,7 +411,7 @@ def all_mutations(seqs, seen_bases, mutfree_pos=None):
     seen_bases : ndarray, shape=(n, l, 4)
         Array of occurence of each base at each position during the
         optimization process of each sequence
-    mutfree_pos : ndarray, default=None
+    mutfree_pos : ndarray, optional
         Array of positions in length where mutations can be taken
 
     Returns
@@ -445,7 +455,7 @@ def all_mutations(seqs, seen_bases, mutfree_pos=None):
     return mutated, mut_energy
 
 
-def repeat_along_diag(a, r):
+def repeat_along_diag(a: np.ndarray, r: int) -> np.ndarray:
     """Construct a matrix by repeating a sub_matrix along the diagonal.
 
     References
@@ -459,7 +469,7 @@ def repeat_along_diag(a, r):
     return out.reshape(-1, n * r)
 
 
-def exp_normalize(x, axis=-1):
+def exp_normalize(x: np.ndarray, axis: int = -1) -> np.ndarray:
     res = np.exp(x - np.max(x, axis=axis, keepdims=True))
     return res / np.sum(res, axis=axis, keepdims=True)
 
@@ -546,24 +556,24 @@ def random_sequences(
 
 
 def get_profile_torch(
-    seqs,
-    model,
-    winsize,
-    head_interval=None,
-    head_crop=0,
-    n_tracks=1,
-    track_index=0,
-    middle=False,
-    reverse=False,
-    stride=1,
-    batch_size=1024,
-    num_workers=4,
-    offset=None,
-    seed=None,
-    verbose=False,
-    return_index=False,
-    flanks=None,
-):
+    seqs: np.ndarray,
+    model: nn.Module,
+    winsize: int,
+    head_interval: int = None,
+    head_crop: int = 0,
+    n_tracks: int = 1,
+    track_index: int = 0,
+    middle: bool = False,
+    reverse: bool = False,
+    stride: int = 1,
+    batch_size: int = 1024,
+    num_workers: int = 4,
+    offset: int = None,
+    seed: int = None,
+    verbose: bool = False,
+    return_index: bool = False,
+    flanks: Union[Tuple[np.ndarray, np.ndarray], str] = None,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Predict profile.
 
     Parameters
@@ -575,7 +585,7 @@ def get_profile_torch(
         Tensorflow model instance supporting the predict method
     winsize : int
         Input length of the model
-    head_interval : int, default=None
+    head_interval : int, optional
         Spacing between outputs of the model, for a model with multiple
         outputs starting at first window position and with regular spacing.
         If None, model must have a single output in the middle of the window.
@@ -585,30 +595,30 @@ def get_profile_torch(
         Number of tracks outputted by the model
     trackindex : int, optional
         Track index to predict on
-    middle : bool, default=False
+    middle : bool, optional
         Whether to use only the middle half of output heads for deriving
         predictions. This results in no predictions on sequence edges.
-    reverse : bool, default=False
+    reverse : bool, optional
         If True predict on reverse strand. Default is False for predicting on
         forward strand.
-    stride : int, default=1
+    stride : int, optional
         Stride to use for prediction. Using a value other than 1 will result
         in bases being skipped and make prediction faster
-    batch_size : int, default=1024
+    batch_size : int, optional
         Batch_size for model.predict().
     num_worker : int, optional
         Number of processes to run in parrallel when making batch for prediction
-    offset : int, default=None
+    offset : int, optional
         Offset for start of prediciton, will be forced to be positive and
         smaller than stride by taking the modulo. Default value of None will
         result in a random offset being chosen.
-    seed : int, default=None
+    seed : int, optional
         Value of seed to use for choosing random offset.
-    verbose : bool, default=False
+    verbose : bool, optional
         If True, print information messages.
-    return_index : bool, default=False
+    return_index : bool, optional
         If True, return indices corresponding to the predictions.
-    flanks : tuple of array or 'self', default=None
+    flanks : tuple of array or 'self', optional
         Tuple of 2 arrays flank_keft and flank_right to be added at the start
         and end respectively of each sequence to get prediction on the entire
         sequence.
@@ -697,7 +707,7 @@ def get_profile_torch(
         return preds
 
 
-def rmse(y_true, y_pred):
+def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
     """Compute RMSE between two arrays.
 
     Parameters
@@ -714,7 +724,7 @@ def rmse(y_true, y_pred):
     return np.sqrt(np.mean((y_true - y_pred) ** 2, axis=-1))
 
 
-def np_mae_cor(y_true, y_pred, axis=-1):
+def np_mae_cor(y_true: np.ndarray, y_pred: np.ndarray, axis: int = -1) -> np.ndarray:
     """Numpy equivalent of mae_cor"""
     X = y_true - np.mean(y_true)
     Y = y_pred - np.mean(y_pred, axis=axis, keepdims=True)
@@ -730,13 +740,13 @@ def np_mae_cor(y_true, y_pred, axis=-1):
 
 
 def make_shape(
-    length,
-    amplitude,
-    shape="linear",
-    background=["low", "low"],
-    std_factor=1 / 4,
-    sig_spread=6,
-):
+    length: int,
+    amplitude: float,
+    shape: str = "linear",
+    background: Tuple[str, str] = ["low", "low"],
+    std_factor: float = 1 / 4,
+    sig_spread: int = 6,
+) -> np.ndarray:
     base_length = length
     if background[0] == background[1]:
         length = (length + 1) // 2
@@ -772,16 +782,16 @@ def make_shape(
 
 
 def make_target(
-    length,
-    insertlen,
-    amplitude,
-    ishape="linear",
-    insertstart=None,
-    period=None,
-    pinsertlen=147,
-    pshape="gaussian",
-    background=["low", "low"],
-    **kwargs,
+    length: int,
+    insertlen: int,
+    amplitude: float,
+    ishape: str = "linear",
+    insertstart: int = None,
+    period: int = None,
+    pinsertlen: int = 147,
+    pshape: str = "gaussian",
+    background: Tuple[str, str] = ["low", "low"],
+    **kwargs: Any,
 ):
     if insertstart is None:
         insertstart = (length - insertlen + 1) // 2
@@ -811,7 +821,13 @@ def make_target(
     return target[:length]
 
 
-def select(energies, weights, cur_energy, temperature, step=None):
+def select(
+    energies: List[np.ndarray],
+    weights: ArrayLike,
+    cur_energy: np.ndarray,
+    temperature: float,
+    step: int = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     """Choose a mutation with low energy based on kMC method.
 
     Parameters
@@ -825,7 +841,7 @@ def select(energies, weights, cur_energy, temperature, step=None):
         Energies of the sequences before mutation.
     temperature : float
         Temperature to use for deriving probabilities from energies in the kMC
-    step : int, default=None
+    step : int, optional
         Step index in the optimisation process. If set, the computed
         probabilities will be save to a file.
 
@@ -862,7 +878,7 @@ def select(energies, weights, cur_energy, temperature, step=None):
     return sel_idx, sel_energies
 
 
-def get_rows_and_cols(n_seqs):
+def get_rows_and_cols(n_seqs: int) -> Tuple[int, int]:
     """Determine number of rows and columns to place a number of subplots.
 
     Parameters
@@ -885,7 +901,7 @@ def get_rows_and_cols(n_seqs):
     return nrow, ncol
 
 
-def main(args):  # TODO
+def main(args: argparse.Namespace) -> None:
     # Load model
     args.architecture = models.ARCHITECTURES[args.architecture]
     model = args.architecture(args.n_tracks).to(args.device)
