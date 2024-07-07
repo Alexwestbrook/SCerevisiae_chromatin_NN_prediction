@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import predict_pytorch
 import torch
+import utils
 from matplotlib import pyplot as plt
 from numpy.typing import ArrayLike
 from torch import nn
@@ -251,6 +252,19 @@ def parsing() -> argparse.Namespace:
         help="target GC content for the designed sequences (default: %(default)s)",
     )
     parser.add_argument(
+        "-gctol",
+        type=float,
+        default=0.0001,
+        help="precision of GC_content (default: %(default)s)",
+    )
+    parser.add_argument(
+        "-gclen",
+        "--gc_constrlen",
+        type=int,
+        default=100,
+        help="length over which to apply the GC constraint to (default: %(default)s)",
+    )
+    parser.add_argument(
         "--loss",
         type=str,
         default="rmse",
@@ -371,27 +385,45 @@ def parsing() -> argparse.Namespace:
     return args
 
 
-def GC_energy(seqs: np.ndarray, target_gc: float) -> np.ndarray:
-    """Compute GC energy for each sequence in an array.
+def GC_energy(
+    seqs: np.ndarray,
+    n: int,
+    target_gc: float,
+    tol: float = 0,
+    order: str = "ACGT",
+    form: str = "token",
+) -> Union[int, np.ndarray]:
+    """Compute GC energy of all sequences.
 
-    The GC_energy is computed as `abs(gc - target_gc)`
+    GC energy of a sequence is defined as the rmse of all values of sliding GC along the sequence.
 
     Parameters
     ----------
-    seqs : ndarray
-        Array of indexes into 'ACGT', with the sequences on the last axis
-    target_gc : float
-        Value of the target gc content
+    seqs: ndarray
+        Input sequences. Dimensions must start with number of sequences if applicable,
+        then length of sequences, and finally one-hot dimension if applicable.
+    n: int
+        Length of window to compute GC content on, must be greater than 0.
+    target_gc: float
+        Target gc content.
+    tol: float, optional
+        Tolerance for target_gc precision, any value closer than tol to the target_gc will be considered equal.
+    order: str, optional
+        Order of encoding, must contain each letter of ACGT exactly once.
+        If `form` is 'token', then value i corresponds to base at index i in order.
+        If `form` is 'one_hot', then vector of zeros with a 1 at position i corresponds to base at index i in order.
+    form: {'token', 'one_hot'}, optional
+        Form of input array. 'token' for indexes of bases and 'one_hot' for one-hot encoded sequences, with an extra dimension.
 
     Returns
     -------
-    ndarray
-        Array of absolute difference between sequence gc and target gc,
-        with same shape as seqs but last dimension removed
+    int or ndarray
+        Array of energies for each sequence. If a single sequence is given without a number of sequences dimension, a scalar is returned.
     """
-    return np.abs(
-        np.sum((seqs == 1) | (seqs == 2), axis=-1) / seqs.shape[-1] - target_gc
-    )
+    sliding_gc = utils.sliding_GC(seqs, n, axis=-1, order=order, form=form)
+    if tol != 0:
+        sliding_gc[np.abs(sliding_gc - target_gc) < tol] = target_gc
+    return rmse(sliding_gc, target_gc)
 
 
 def all_mutations(
@@ -1002,7 +1034,7 @@ def main(args: argparse.Namespace) -> None:
         seqs, offset=np.random.randint(0, args.stride), flanks=flanks, reverse=True
     )
     # Compute energy
-    gc_energy = GC_energy(seqs, args.target_gc)
+    gc_energy = GC_energy(seqs, args.gc_constrlen, args.target_gc, tol=args.gctol)
     for_energy = args.loss(args.target[indices], preds)
     rev_energy = args.loss(args.target_rev[indices_rev], preds_rev)
     energy_list = [gc_energy, for_energy, rev_energy, np.zeros(args.n_seqs)]
@@ -1042,7 +1074,7 @@ def main(args: argparse.Namespace) -> None:
             seqs, offset=np.random.randint(0, args.stride), flanks=flanks, reverse=True
         )
         # Compute energy components
-        gc_energy = GC_energy(seqs, args.target_gc)
+        gc_energy = GC_energy(seqs, args.gc_constrlen, args.target_gc, tol=args.gctol)
         for_energy = args.loss(args.target[indices], preds)
         rev_energy = args.loss(args.target_rev[indices_rev], preds_rev)
         energy_list = [gc_energy, for_energy, rev_energy, mut_energy]
@@ -1151,9 +1183,9 @@ if __name__ == "__main__":
     try:
         main(args)
     except KeyboardInterrupt:
-        with open(Path(args.output_dir, "config.txt"), "a") as f:
+        with open(Path(args.output_dir, "execution_time.txt"), "w") as f:
             f.write("KeyboardInterrupt\n")
             f.write(f"total time: {time.time() - t0}\n")
         raise
-    with open(Path(args.output_dir, "config.txt"), "a") as f:
+    with open(Path(args.output_dir, "execution_time.txt"), "w") as f:
         f.write(f"total time: {time.time() - t0}\n")
