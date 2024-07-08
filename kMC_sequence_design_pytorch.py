@@ -1159,16 +1159,20 @@ if __name__ == "__main__":
         )
     # Store arguments in config file
     to_serealize = {
-        k: v
-        for k, v in vars(args).items()
-        if k not in ["target", "target_rev", "weights"]
+        k: v for k, v in vars(args).items() if k not in ["target", "target_rev"]
     }
     with open(Path(args.output_dir, "config.txt"), "w") as f:
-        json.dump(to_serealize, f, indent=4)
-        f.write("\n")
-        f.write(f"weights: {args.weights}\n")
-        f.write(f"timestamp: {tmstmp}\n")
-        f.write(f"machine: {socket.gethostname()}\n")
+        json.dump(
+            {
+                **to_serealize,
+                **{
+                    "timestamp": str(tmstmp),
+                    "machine": socket.gethostname(),
+                },
+            },
+            f,
+            indent=4,
+        )
     # Convert to non json serializable objects
     losses = {"rmse": rmse, "mae_cor": np_mae_cor}
     args.loss = losses[args.loss]
@@ -1185,7 +1189,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         with open(Path(args.output_dir, "execution_time.txt"), "w") as f:
             f.write("KeyboardInterrupt\n")
-            f.write(f"total time: {time.time() - t0}\n")
+            f.write(f"total time: {datetime.datetime.now() - tmstmp}\n")
         raise
     with open(Path(args.output_dir, "execution_time.txt"), "w") as f:
-        f.write(f"total time: {time.time() - t0}\n")
+        f.write(f"total time: {datetime.datetime.now() - tmstmp}\n")
