@@ -424,7 +424,7 @@ if __name__ == "__main__":
         filename = utils.safe_filename(
             Path(
                 args.output_dir,
-                f"preds_{Path(args.model_file).stem}_on_{Path(args.fasta_file).stem}{filename_suff}_track{track}.bw",
+                f"preds_{Path(args.model_file).parts[-2]}_on_{Path(args.fasta_file).stem}{filename_suff}_track{track}.bw",
             )
         )
         bw = pbw.open(str(filename), "w")

@@ -6,6 +6,8 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Tuple, Union
 import Bio
 import numpy as np
 from Bio import Seq
+from scipy.signal import convolve
+from scipy.signal.windows import gaussian
 from sklearn.preprocessing import OrdinalEncoder
 
 
@@ -341,3 +343,23 @@ def sliding_GC(
         return moving_sum(GC_mask, n=n, axis=-1) / moving_sum(valid_mask, n=n, axis=-1)
     else:
         raise ValueError(f"form must be 'token' or 'one_hot', not {form}")
+
+
+def smooth(values, window_size, mode="linear", sigma=1, padding="same"):
+    if mode == "linear":
+        box = np.ones(window_size) / window_size
+    elif mode == "gaussian":
+        box = gaussian(window_size, sigma)
+        box /= np.sum(box)
+    elif mode == "triangle":
+        box = np.concatenate(
+            (
+                np.arange((window_size + 1) // 2),
+                np.arange(window_size // 2 - 1, -1, -1),
+            ),
+            dtype=float,
+        )
+        box /= np.sum(box)
+    else:
+        raise NameError("Invalid mode")
+    return convolve(values, box, mode=padding)
