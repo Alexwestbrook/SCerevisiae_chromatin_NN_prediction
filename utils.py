@@ -5,7 +5,10 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Tuple, Union
 
 import Bio
 import numpy as np
+import scipy
 from Bio import Seq
+from numpy.core.numeric import normalize_axis_tuple
+from numpy.lib.stride_tricks import as_strided
 from scipy.signal import convolve
 from scipy.signal.windows import gaussian
 from sklearn.preprocessing import OrdinalEncoder
@@ -363,3 +366,296 @@ def smooth(values, window_size, mode="linear", sigma=1, padding="same"):
     else:
         raise NameError("Invalid mode")
     return convolve(values, box, mode=padding)
+
+
+def masked_convolve(in1, in2, correct_missing=True, norm=True, valid_ratio=1./3., *args, **kwargs):
+    """A workaround for np.ma.MaskedArray in scipy.signal.convolve. 
+    It converts the masked values to complex values=1j. The complex space allows to set a limit
+    for the imaginary convolution. The function use a ratio `valid_ratio` of np.sum(in2) to 
+    set a lower limit on the imaginary part to mask the values.
+    I.e. in1=[[1.,1.,--,--]] in2=[[1.,1.]] -> imaginary_part/sum(in2): [[1., 1., .5, 0.]]
+    -> valid_ratio=.5 -> out:[[1., 1., .5, --]].
+
+    Parameters
+    ---------
+    in1 : array_like
+        First input.
+    in2 : array_like
+        Second input. Should have the same number of dimensions as `in1`.
+    correct_missing : bool, optional
+        correct the value of the convolution as a sum over valid data only, 
+        as masked values account 0 in the real space of the convolution.
+    norm : bool, optional
+        if the output should be normalized to np.sum(in2).
+    valid_ratio: float, optional
+        the upper limit of the imaginary convolution to mask values. Defined by the ratio of np.sum(in2).
+    *args, **kwargs: optional
+        passed to scipy.signal.convolve(..., *args, **kwargs)
+    
+    Reference:
+    https://stackoverflow.com/a/72855832
+    """
+    if not isinstance(in1, np.ma.MaskedArray):
+        in1 = np.ma.array(in1)
+    
+    # np.complex128 -> stores real as np.float64
+    con = scipy.signal.convolve(in1.astype(np.complex128).filled(fill_value=1j), 
+                                in2.astype(np.complex128), 
+                                *args, **kwargs)
+    
+    # split complex128 to two float64s
+    con_imag = con.imag
+    con = con.real
+    mask = np.abs(con_imag/np.sum(in2)) > valid_ratio
+    
+    # con_east.real / (1. - con_east.imag): correction, to get the mean over all valid values
+    # con_east.imag > percent: how many percent of the single convolution value have to be from valid values
+    if correct_missing:
+        correction = np.sum(in2) - con_imag
+        con[correction!=0] *= np.sum(in2)/correction[correction!=0]
+        
+    if norm:
+        con /= np.sum(in2)
+        
+    return np.ma.array(con, mask=mask)
+
+
+def nan_smooth(values, window_size, mode="linear", sigma=1, padding="same", pad_masked=False):
+    if mode == "linear":
+        box = np.ones(window_size) / window_size
+    elif mode == "gaussian":
+        box = gaussian(window_size, sigma)
+        box /= np.sum(box)
+    elif mode == "triangle":
+        box = np.concatenate(
+            (
+                np.arange((window_size + 1) // 2),
+                np.arange(window_size // 2 - 1, -1, -1),
+            ),
+            dtype=float,
+        )
+        box /= np.sum(box)
+    else:
+        raise NameError("Invalid mode")
+    values = np.ma.array(values, mask=~np.isfinite(values))
+    if pad_masked:
+        if padding == 'same':
+            left_size = window_size // 2
+            right_size = (window_size-1) // 2
+        elif padding == 'full':
+            left_size = window_size - 1
+            right_size = window_size - 1
+        values = np.ma.concatenate([
+            np.ma.masked_all(left_size, dtype=values.dtype),
+            values,
+            np.ma.masked_all(right_size, dtype=values.dtype)])
+        padding = 'valid'
+    return masked_convolve(values, box, valid_ratio=(window_size-1)/window_size, mode=padding).filled(fill_value=np.nan)
+
+
+def sliding_window_view(x, window_shape, axis=None, *, subok=False, writeable=False):
+    """Function from the numpy library"""
+    window_shape = tuple(window_shape) if np.iterable(window_shape) else (window_shape,)
+    # first convert input to array, possibly keeping subclass
+    x = np.array(x, copy=False, subok=subok)
+
+    window_shape_array = np.array(window_shape)
+    if np.any(window_shape_array < 0):
+        raise ValueError("`window_shape` cannot contain negative values")
+
+    if axis is None:
+        axis = tuple(range(x.ndim))
+        if len(window_shape) != len(axis):
+            raise ValueError(
+                f"Since axis is `None`, must provide "
+                f"window_shape for all dimensions of `x`; "
+                f"got {len(window_shape)} window_shape elements "
+                f"and `x.ndim` is {x.ndim}."
+            )
+    else:
+        axis = normalize_axis_tuple(axis, x.ndim, allow_duplicate=True)
+        if len(window_shape) != len(axis):
+            raise ValueError(
+                f"Must provide matching length window_shape and "
+                f"axis; got {len(window_shape)} window_shape "
+                f"elements and {len(axis)} axes elements."
+            )
+
+    out_strides = x.strides + tuple(x.strides[ax] for ax in axis)
+
+    # note: same axis can be windowed repeatedly
+    x_shape_trimmed = list(x.shape)
+    for ax, dim in zip(axis, window_shape):
+        if x_shape_trimmed[ax] < dim:
+            raise ValueError("window shape cannot be larger than input array shape")
+        x_shape_trimmed[ax] -= dim - 1
+    out_shape = tuple(x_shape_trimmed) + window_shape
+    return as_strided(
+        x, strides=out_strides, shape=out_shape, subok=subok, writeable=writeable
+    )
+
+
+def strided_window_view(
+    x, window_shape, stride, axis=None, *, subok=False, writeable=False
+):
+    """Variant of `sliding_window_view` which supports stride parameter.
+
+    The axis parameter doesn't work, the stride can be of same shape as
+    window_shape, providing different stride in each dimension. If shorter
+    than window_shape, stride will be filled with ones. it also doesn't
+    support multiple windowing on same axis"""
+    window_shape = tuple(window_shape) if np.iterable(window_shape) else (window_shape,)
+    # first convert input to array, possibly keeping subclass
+    x = np.array(x, copy=False, subok=subok)
+
+    window_shape_array = np.array(window_shape)
+    if np.any(window_shape_array < 0):
+        raise ValueError("`window_shape` cannot contain negative values")
+
+    if axis is None:
+        axis = tuple(range(x.ndim))
+        if len(window_shape) != len(axis):
+            raise ValueError(
+                f"Since axis is `None`, must provide "
+                f"window_shape for all dimensions of `x`; "
+                f"got {len(window_shape)} window_shape elements "
+                f"and `x.ndim` is {x.ndim}."
+            )
+    else:
+        axis = normalize_axis_tuple(axis, x.ndim, allow_duplicate=True)
+        if len(window_shape) != len(axis):
+            raise ValueError(
+                f"Must provide matching length window_shape and "
+                f"axis; got {len(window_shape)} window_shape "
+                f"elements and {len(axis)} axes elements."
+            )
+
+    # ADDED THIS ####
+    stride = tuple(stride) if np.iterable(stride) else (stride,)
+    stride_array = np.array(stride)
+    if np.any(stride_array < 0):
+        raise ValueError("`stride` cannot contain negative values")
+    if len(stride) > len(window_shape):
+        raise ValueError("`stride` cannot be longer than `window_shape`")
+    elif len(stride) < len(window_shape):
+        stride += (1,) * (len(window_shape) - len(stride))
+    ########################
+
+    # CHANGED THIS LINE ####
+    # out_strides = x.strides + tuple(x.strides[ax] for ax in axis)
+    # TO ###################
+    out_strides = tuple(x.strides[ax] * stride[ax] for ax in range(x.ndim)) + tuple(
+        x.strides[ax] for ax in axis
+    )
+    ########################
+
+    # note: same axis can be windowed repeatedly
+    x_shape_trimmed = list(x.shape)
+    for ax, dim in zip(axis, window_shape):
+        if x_shape_trimmed[ax] < dim:
+            raise ValueError("window shape cannot be larger than input array shape")
+        # CHANGED THIS LINE ####
+        # x_shape_trimmed[ax] -= dim - 1
+        # TO ###################
+        x_shape_trimmed[ax] = int(np.ceil((x_shape_trimmed[ax] - dim + 1) / stride[ax]))
+        ########################
+    out_shape = tuple(x_shape_trimmed) + window_shape
+    return as_strided(
+        x, strides=out_strides, shape=out_shape, subok=subok, writeable=writeable
+    )
+
+
+def strided_sliding_window_view(
+    x, window_shape, stride, sliding_len, axis=None, *, subok=False, writeable=False
+):
+    """Variant of `strided_window_view` which slides in between strides.
+
+    This will provide blocks of sliding window of `sliding_len` windows,
+    with first windows spaced by `stride`
+    The axis parameter determines where the stride and slide are performed, it
+    can only be a single value."""
+    window_shape = tuple(window_shape) if np.iterable(window_shape) else (window_shape,)
+    # first convert input to array, possibly keeping subclass
+    x = np.array(x, copy=False, subok=subok)
+
+    window_shape_array = np.array(window_shape)
+    if np.any(window_shape_array < 0):
+        raise ValueError("`window_shape` cannot contain negative values")
+
+    # ADDED THIS ####
+    stride = tuple(stride) if np.iterable(stride) else (stride,)
+    stride_array = np.array(stride)
+    if np.any(stride_array < 0):
+        raise ValueError("`stride` cannot contain negative values")
+    if len(stride) == 1:
+        stride += (1,)
+    elif len(stride) > 2:
+        raise ValueError("`stride` cannot be of length greater than 2")
+    if sliding_len % stride[1] != 0:
+        raise ValueError("second `stride` must divide `sliding_len` exactly")
+    # CHANGED THIS ####
+    # if axis is None:
+    #     axis = tuple(range(x.ndim))
+    #     if len(window_shape) != len(axis):
+    #         raise ValueError(f'Since axis is `None`, must provide '
+    #                          f'window_shape for all dimensions of `x`; '
+    #                          f'got {len(window_shape)} window_shape '
+    #                          f'elements and `x.ndim` is {x.ndim}.')
+    # else:
+    #     axis = normalize_axis_tuple(axis, x.ndim, allow_duplicate=True)
+    #     if len(window_shape) != len(axis):
+    #         raise ValueError(f'Must provide matching length window_shape '
+    #                          f'and axis; got {len(window_shape)} '
+    #                          f'window_shape elements and {len(axis)} axes '
+    #                          f'elements.')
+    # TO ###################
+    if axis is None:
+        axis = 0
+    ########################
+
+    # CHANGED THIS LINE ####
+    # out_strides = ((x.strides[0]*stride, )
+    #                + tuple(x.strides[1:])
+    #                + tuple(x.strides[ax] for ax in axis))
+    # TO ###################
+    out_strides = (
+        x.strides[:axis]
+        + (x.strides[axis] * stride[0], x.strides[axis] * stride[1])
+        + x.strides[axis:]
+    )
+    ########################
+
+    # CHANGED THIS ####
+    # note: same axis can be windowed repeatedly
+    # x_shape_trimmed = list(x.shape)
+    # for ax, dim in zip(axis, window_shape):
+    #     if x_shape_trimmed[ax] < dim:
+    #         raise ValueError(
+    #             'window shape cannot be larger than input array shape')
+    #     x_shape_trimmed[ax] = int(np.ceil(
+    #         (x_shape_trimmed[ax] - dim + 1) / stride))
+    # out_shape = tuple(x_shape_trimmed) + window_shape
+    # TO ###################
+    x_shape_trimmed = [
+        (x.shape[axis] - window_shape[axis] - sliding_len + stride[1]) // stride[0] + 1,
+        sliding_len // stride[1],
+    ]
+    out_shape = window_shape[:axis] + tuple(x_shape_trimmed) + window_shape[axis:]
+    ########################
+    return as_strided(
+        x, strides=out_strides, shape=out_shape, subok=subok, writeable=writeable
+    )
+
+
+def get_legend(axes):
+    handles, labels = [], []
+    for ax in axes:
+        handle, label = ax.get_legend_handles_labels()
+        handles += handle
+        labels += label
+    return handles, labels
+
+
+def z_score(arr):
+    mean, std = np.nanmean(arr), np.nanstd(arr)
+    return (arr - mean) / std

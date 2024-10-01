@@ -92,7 +92,7 @@ def parsing() -> argparse.Namespace:
     parser.add_argument(
         "-h_int",
         "--head_interval",
-        help="Spacing between output head in case of mutliple outputs "
+        help="Spacing between output head in case of multiple outputs "
         "(default: %(default)s)",
         default=16,
         type=int,
