@@ -422,7 +422,7 @@ class InceptionModule(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = torch.concatenate([self.conv3(x), self.conv6(x), self.conv9(x)], dim=1)(x)
+        x = torch.concatenate([self.conv3(x), self.conv6(x), self.conv9(x)], dim=1)
         return self.pool_block(x)
 
 
