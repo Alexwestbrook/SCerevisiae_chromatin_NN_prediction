@@ -400,6 +400,60 @@ class OriginalBassenjiMultiNetworkNoCrop(nn.Module):
         return torch.transpose(x, 1, 2)
 
 
+class InceptionModule(nn.Module):
+    def __init__(self,
+                 in_channels: int,
+                 out_channels_3: int,
+                 out_channels_6: int,
+                 out_channels_9: int,
+                 pool_size: int = 2) -> None:
+        super().__init__()
+        self.conv3 = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels_3, 3, padding="same"),
+            nn.ReLU(),
+        )
+        self.conv6 = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels_6, 6, padding="same"),
+            nn.ReLU(),
+        )
+        self.conv9 = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels_9, 9, padding="same"),
+            nn.ReLU(),
+        )
+        self.pool_block = nn.Sequential(
+            nn.MaxPool(pool_size),
+            nn.BatchNorm1d(out_channels_3 + out_channels_6 + out_channels_9),
+            nn.Dropout(0.2)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.concatenate([self.conv3(x), self.conv6(x), self.conv9(x)], dim=1)(x)
+        return self.pool_block(x)
+
+
+class ConvNetwork(nn.Module):
+    def __init__(self, length: int = 101) -> None:
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            PooledConvLayer(4, 64, 6, pool_size=2),
+            PooledConvLayer(64, 64, 6, pool_size=2),
+        )
+        self.dense_stack = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(length // 4 * 64, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.transpose(x, 1, 2)
+        x = self.conv_stack(x)
+        x = torch.transpose(x, 1, 2)
+        x = self.dense_stack(x)
+        return x
+
+
 class SiameseConvNetwork(nn.Module):
     def __init__(self, length: int = 101) -> None:
         super().__init__()
@@ -409,7 +463,7 @@ class SiameseConvNetwork(nn.Module):
         )
         self.dense_stack = nn.Sequential(
             nn.Flatten(),
-            nn.Linear((length + 3) // 4 * 2, 128),
+            nn.Linear(length // 4 * 64 * 2, 128),
             nn.ReLU(),
             nn.Linear(128, 1),
             nn.Sigmoid(),
@@ -420,10 +474,60 @@ class SiameseConvNetwork(nn.Module):
         x1 = self.conv_stack(x1)
         x2 = torch.transpose(input2, 1, 2)
         x2 = self.conv_stack(x2)
-        x = torch.concatenate([x1, x2])
+        x = torch.concatenate([x1, x2], dim=1)
         x = torch.transpose(x, 1, 2)
         x = self.dense_stack(x)
         return x
+    
+
+class InceptionNetwork(nn.Module):
+    def __init__(self, length: int = 101) -> None:
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            InceptionModule(4, out_channels_3=32, out_channels_6=64, out_channels_9=16, pool_size=2),
+            InceptionModule(112, out_channels_3=32, out_channels_6=64, out_channels_9=16, pool_size=2),
+        )
+        self.dense_stack = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(length // 4 * 112, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.transpose(x, 1, 2)
+        x = self.conv_stack(x)
+        x = torch.transpose(x, 1, 2)
+        x = self.dense_stack(x)
+        return x
+
+
+class SiameseInceptionNetwork(nn.Module):
+    def __init__(self, length: int = 101) -> None:
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            InceptionModule(4, out_channels_3=32, out_channels_6=64, out_channels_9=16, pool_size=2),
+            InceptionModule(112, out_channels_3=32, out_channels_6=64, out_channels_9=16, pool_size=2),
+        )
+        self.dense_stack = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(length // 4 * 112 * 2, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, input1: torch.Tensor, input2: torch.Tensor) -> torch.Tensor:
+        x1 = torch.transpose(input1, 1, 2)
+        x1 = self.conv_stack(x1)
+        x2 = torch.transpose(input2, 1, 2)
+        x2 = self.conv_stack(x2)
+        x = torch.concatenate([x1, x2], dim=1)
+        x = torch.transpose(x, 1, 2)
+        x = self.dense_stack(x)
+        return x
+
 
 ARCHITECTURES = {
     "BassenjiMnaseNetwork": BassenjiMnaseNetwork,
