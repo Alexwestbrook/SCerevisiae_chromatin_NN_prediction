@@ -641,3 +641,80 @@
 # python predict_pytorch.py -m Trainedmodels/$model_dir/model_state.pt \
 #     -f /home/alex/shared_folder/SCerevisiae/genome/W303_Mmmyco.fa \
 #     -o Trainedmodels/$model_dir -arch $arch -mid -v -w 16384 -b 512
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/2kb_regnuc_lowpol_10seq_flanksInt2 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 2000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks /home/alex/shared_folder/SCerevisiae/data/S288c_siteManon_Int2_1kbflanks_ACGTidx.npz \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_regnuc.npz \
+#     -nt 2 -track 0 1 -twgt 1 1 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 500 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/2kb_regnuc_lowpol_10seq_flanksInt2_trackweight \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 2000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks /home/alex/shared_folder/SCerevisiae/data/S288c_siteManon_Int2_1kbflanks_ACGTidx.npz \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_regnuc.npz \
+#     -nt 2 -track 0 1 -twgt 1 8 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 500 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb_regnuc_lowpol_10seq_flanksInt2 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks /home/alex/shared_folder/SCerevisiae/data/S288c_siteManon_Int2_1kbflanks_ACGTidx.npz \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_regnuc.npz \
+#     -nt 2 -track 0 1 -twgt 1 8 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+python kMC_sequence_design_pytorch.py \
+    -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb+_regnuc_lowpol_50seq_randomflanks \
+    -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+    -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+    -n 50 -l 4008 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+    --flanks random \
+    --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb+_lowpol_regnuc.npz \
+    -nt 2 -track 0 1 -twgt 1 8 \
+    -gctol 0.01 -gclen 100 \
+    --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb+_nucNDR_lowpol_10seq_randomflanks \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4175 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb+_lowpol_nucNDR.npz \
+#     -nt 2 -track 0 1 -twgt 1 8 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb+_regnuc_lowpol_10seq_randomflanks_gc0.2 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4008 \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb+_lowpol_regnuc.npz \
+#     -nt 2 -track 0 1 -twgt 1 8 \
+#     -gctol 0.01 -gclen 100 -targ_gc 0.2 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+python kMC_sequence_design_pytorch.py \
+    -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb+_nucNDR_lowpol_10seq_randomflanks_gc0.2 \
+    -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+    -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+    -n 10 -l 4175 \
+    --flanks random \
+    --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb+_lowpol_nucNDR.npz \
+    -nt 2 -track 0 1 -twgt 1 8 \
+    -gctol 0.01 -gclen 100 -targ_gc 0.2 \
+    --steps 1000 -t 0.0001 -s 16 --seed 0 -v
