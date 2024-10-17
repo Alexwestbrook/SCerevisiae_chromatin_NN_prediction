@@ -400,6 +400,31 @@ class OriginalBassenjiMultiNetworkNoCrop(nn.Module):
         return torch.transpose(x, 1, 2)
 
 
+class SiameseConvNetwork(nn.Module):
+    def __init__(self, length: int = 101) -> None:
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            PooledConvLayer(4, 64, 6, pool_size=2),
+            PooledConvLayer(64, 64, 6, pool_size=2),
+        )
+        self.dense_stack = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear((length + 3) // 4 * 2, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, input1: torch.Tensor, input2: torch.Tensor) -> torch.Tensor:
+        x1 = torch.transpose(input1, 1, 2)
+        x1 = self.conv_stack(x1)
+        x2 = torch.transpose(input2, 1, 2)
+        x2 = self.conv_stack(x2)
+        x = torch.concatenate([x1, x2])
+        x = torch.transpose(x, 1, 2)
+        x = self.dense_stack(x)
+        return x
+
 ARCHITECTURES = {
     "BassenjiMnaseNetwork": BassenjiMnaseNetwork,
     "BassenjiEtienneNetwork": BassenjiEtienneNetwork,
