@@ -420,11 +420,6 @@ class InceptionModule(nn.Module):
             nn.Conv1d(in_channels, out_channels_9, 9, padding="same"),
             nn.ReLU(),
         )
-        self.pool_block = nn.Sequential(
-            nn.MaxPool(pool_size),
-            nn.BatchNorm1d(out_channels_3 + out_channels_6 + out_channels_9),
-            nn.Dropout(0.2)
-        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = torch.concatenate([self.conv3(x), self.conv6(x), self.conv9(x)], dim=1)(x)
