@@ -76,7 +76,8 @@ def parsing() -> argparse.Namespace:
         "--track_index",
         help="Track index to optimize on (default: %(default)s)",
         type=int,
-        default=0,
+        nargs="+",
+        default=[0],
     )
     parser.add_argument(
         "-crop",
@@ -279,6 +280,14 @@ def parsing() -> argparse.Namespace:
         help="weights for the energy terms in order E_gc, E_for, E_rev, E_mut (default: %(default)s)",
     )
     parser.add_argument(
+        "-twgt",
+        "--track_weights",
+        type=float,
+        nargs="+",
+        default=[1],
+        help="weights for each track (default: %(default)s)",
+    )
+    parser.add_argument(
         "-t",
         "--temperature",
         type=float,
@@ -334,7 +343,8 @@ def parsing() -> argparse.Namespace:
         args.num_workers,
     ]:
         assert item is None or item >= 1
-    assert isinstance(args.track_index, int) and args.track_index < args.n_tracks
+    for tidx in args.track_index:
+        assert isinstance(tidx, int) and tidx < args.n_tracks
     assert args.temperature > 0
     assert args.target_gc < 1 and args.target_gc > 0
     # Check starting sequences
@@ -381,7 +391,26 @@ def parsing() -> argparse.Namespace:
             args.target_rev = np.full(args.length, args.target_rev[0], dtype=float)
         else:
             args.target_rev = np.array(args.target_rev, dtype=float)
-    assert len(args.target) == len(args.target_rev) and len(args.target) == args.length
+    assert (
+        args.target.shape == args.target_rev.shape and len(args.target) == args.length
+    )
+    # Check that there are as many targets as tracks
+    if len(args.track_index) == 1:
+        args.track_index == args.track_index[0]
+    else:
+        assert args.target.ndim == len(args.track_index)
+    # Check that there are as many track weights as tracks
+    assert len(args.track_weights) == len(args.track_index)
+    # Recompute weights to take track_weights into account
+    tws_norm = args.track_weights / np.sum(args.track_weights)
+    w_sum = np.sum(args.weights)
+    args.weights = (
+        args.weights[:1]
+        + [tw * w for tw in tws_norm for w in args.weights[1:3]]
+        + args.weights[3:]
+    )
+    assert len(args.weights) == 2 * (len(args.track_index) + 1)
+    assert np.sum(args.weights) == w_sum
     return args
 
 
@@ -594,7 +623,7 @@ def get_profile_torch(
     head_interval: int = None,
     head_crop: int = 0,
     n_tracks: int = 1,
-    track_index: int = 0,
+    track_index: Union[int, List[int]] = 0,
     middle: bool = False,
     reverse: bool = False,
     stride: int = 1,
@@ -625,8 +654,8 @@ def get_profile_torch(
         Number heads to not consider at left and right of the prediction window
     n_tracks : int, optional
         Number of tracks outputted by the model
-    trackindex : int, optional
-        Track index to predict on
+    trackindex : int or list, optional
+        Track indexes to predict on
     middle : bool, optional
         Whether to use only the middle half of output heads for deriving
         predictions. This results in no predictions on sequence edges.
@@ -658,8 +687,8 @@ def get_profile_torch(
     Returns
     -------
     preds : ndarray
-        Array of predictions with same shape as seqs, except on the last
-        dimension, containing predictions for that sequence.
+        Array of predictions with same shape as seqs, except on the 2 last
+        dimensions, containing predictions for that sequence for all tracks.
     indices : ndarray
         Array of indices of preds into seqs to be taken with
         np.take_along_axis, only provided if return_index is True.
@@ -730,7 +759,12 @@ def get_profile_torch(
         verbose=verbose,
     )
     # Select track and reshape as original sequence
-    preds = preds[..., track_index].reshape(seqs.shape[:-1] + (-1,))
+    if isinstance(track_index, list):
+        preds = preds[..., track_index].reshape(
+            seqs.shape[:-1] + (-1, len(track_index))
+        )
+    else:
+        preds = preds[..., track_index].reshape(seqs.shape[:-1] + (-1,))
     if return_index:
         if flanks is not None:
             indices -= flank_left.shape[-1]
@@ -739,21 +773,22 @@ def get_profile_torch(
         return preds
 
 
-def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
+def rmse(y_true: np.ndarray, y_pred: np.ndarray, axis: int = -1) -> np.ndarray:
     """Compute RMSE between two arrays.
 
     Parameters
     ----------
     y_true, y_pred : ndarray
-        Arrays of values. If multidimensional, computation is performed along
-        the last axis.
+        Arrays of values.
+    axis : int
+        Axis alongwich to compute rmse
 
     Returns
     -------
     ndarray
-        Array of same shape as y_true and y_pred but with last axis removed
+        Array of same shape as y_true and y_pred but with specified axis removed
     """
-    return np.sqrt(np.mean((y_true - y_pred) ** 2, axis=-1))
+    return np.sqrt(np.mean((y_true - y_pred) ** 2, axis=axis))
 
 
 def np_mae_cor(y_true: np.ndarray, y_pred: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -944,7 +979,7 @@ def main(args: argparse.Namespace) -> None:
     assert args.head_interval % args.stride == 0
 
     def predicter(seqs, reverse=False, offset=None, flanks=None):
-        return get_profile_torch(
+        res = get_profile_torch(
             seqs,
             model,
             args.winsize,
@@ -962,6 +997,9 @@ def main(args: argparse.Namespace) -> None:
             return_index=True,
             flanks=flanks,
         )
+        if len(args.track_index) == 1:
+            res = np.expand_dims(res, axis=-1)
+        return res
 
     # Extract flanking sequences
     if args.flanks in ["random", "self"]:
@@ -1034,10 +1072,14 @@ def main(args: argparse.Namespace) -> None:
         seqs, offset=np.random.randint(0, args.stride), flanks=flanks, reverse=True
     )
     # Compute energy
-    gc_energy = GC_energy(seqs, args.gc_constrlen, args.target_gc, tol=args.gctol)
-    for_energy = args.loss(args.target[indices], preds)
-    rev_energy = args.loss(args.target_rev[indices_rev], preds_rev)
-    energy_list = [gc_energy, for_energy, rev_energy, np.zeros(args.n_seqs)]
+    energy_list = [GC_energy(seqs, args.gc_constrlen, args.target_gc, tol=args.gctol)]
+    for i in range(len(args.track_index)):
+        for_energy = args.loss(args.target[indices, i], preds[..., i])
+        rev_energy = args.loss(args.target_rev[indices_rev, i], preds_rev[..., i])
+        energy_list.extend(
+            [for_energy, rev_energy]
+        )  # Add forward and reverse energy for each track
+    energy_list.append(np.zeros(args.n_seqs))  # Add mutation_energy
     cur_energy = sum(w * e for w, e in zip(args.weights, energy_list))
     with open(Path(args.output_dir, "energy.txt"), "a") as f:
         np.savetxt(
@@ -1073,11 +1115,17 @@ def main(args: argparse.Namespace) -> None:
         preds_rev, indices_rev = predicter(
             seqs, offset=np.random.randint(0, args.stride), flanks=flanks, reverse=True
         )
-        # Compute energy components
-        gc_energy = GC_energy(seqs, args.gc_constrlen, args.target_gc, tol=args.gctol)
-        for_energy = args.loss(args.target[indices], preds)
-        rev_energy = args.loss(args.target_rev[indices_rev], preds_rev)
-        energy_list = [gc_energy, for_energy, rev_energy, mut_energy]
+        # Compute energy
+        energy_list = [
+            GC_energy(seqs, args.gc_constrlen, args.target_gc, tol=args.gctol)
+        ]
+        for i in range(
+            len(args.track_index)
+        ):  # Add forward and reverse energy for each track
+            for_energy = args.loss(args.target[indices, i], preds[..., i])
+            rev_energy = args.loss(args.target_rev[indices_rev, i], preds_rev[..., i])
+            energy_list.extend([for_energy, rev_energy])
+        energy_list.append(mut_energy)  # Add mutation_energy
         # Choose best mutation by kMC method
         sel_idx, sel_energies = select(
             energy_list, args.weights, cur_energy, args.temperature, step=step
@@ -1096,35 +1144,40 @@ def main(args: argparse.Namespace) -> None:
             np.savetxt(
                 f, sel_energies, fmt="%-8e", delimiter="\t", header=f"step{step}"
             )
-        fig, axes = plt.subplots(
-            nrow,
-            ncol,
-            figsize=(2 + 3 * ncol, 1 + 2 * nrow),
-            facecolor="w",
-            layout="tight",
-            sharey=True,
-        )
-        if args.n_seqs == 1:
-            ax_list = [axes]
-        else:
-            ax_list = axes.flatten()
-        for ax, pfor, prev in zip(
-            ax_list,
-            preds[np.arange(len(seqs)), sel_idx],
-            preds_rev[np.arange(len(seqs)), sel_idx],
-        ):
-            ax.plot(args.target, color="k", label="target")
-            if target_by_strand:
-                ax.plot(-args.target_rev, color="k")
-                prev = -prev
-            ax.plot(indices, pfor, label="forward")
-            ax.plot(indices_rev, prev, label="reverse", alpha=0.8)
-            ax.legend()
-        fig.savefig(
-            Path(args.output_dir, "pred_figs", f"mut_preds_step{step}.png"),
-            bbox_inches="tight",
-        )
-        plt.close()
+        for i, tidx in enumerate(args.track_index):
+            fig, axes = plt.subplots(
+                nrow,
+                ncol,
+                figsize=(2 + 3 * ncol, 1 + 2 * nrow),
+                facecolor="w",
+                layout="tight",
+                sharey=True,
+            )
+            if args.n_seqs == 1:
+                ax_list = [axes]
+            else:
+                ax_list = axes.flatten()
+            for ax, pfor, prev in zip(
+                ax_list,
+                preds[np.arange(len(seqs)), sel_idx, :, i],
+                preds_rev[np.arange(len(seqs)), sel_idx, :, i],
+            ):
+                ax.plot(args.target[:, i], color="k", label="target")
+                if target_by_strand:
+                    ax.plot(-args.target_rev[:, i], color="k")
+                    prev = -prev
+                ax.plot(indices, pfor, label="forward")
+                ax.plot(indices_rev, prev, label="reverse", alpha=0.8)
+                ax.legend()
+            fig.savefig(
+                Path(
+                    args.output_dir,
+                    "pred_figs",
+                    f"mut_preds_step{step}_track{tidx}.png",
+                ),
+                bbox_inches="tight",
+            )
+            plt.close()
     if args.verbose:
         print(time.time() - t0)
 
@@ -1152,10 +1205,12 @@ if __name__ == "__main__":
     with open(Path(args.output_dir, "energy.txt"), "w") as f:
         f.write(
             "# total_energy\t"
-            "gc_energy\t"
-            "for_energy\t"
-            "rev_energy\t"
-            "mut_energy\n"
+            + "gc_energy\t"
+            + "".join(
+                f"for_energy_track{tidx}\trev_energy_track{tidx}\t"
+                for tidx in args.track_index
+            )
+            + "mut_energy\n"
         )
     # Store arguments in config file
     to_serealize = {
