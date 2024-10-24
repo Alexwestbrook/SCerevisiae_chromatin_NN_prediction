@@ -396,9 +396,12 @@ def parsing() -> argparse.Namespace:
     )
     # Check that there are as many targets as tracks
     if len(args.track_index) == 1:
-        args.track_index == args.track_index[0]
-    else:
-        assert args.target.ndim == len(args.track_index)
+        args.track_index[0] == 0
+        args.target = np.expand_dims(args.target, axis=-1)
+        args.target_rev = np.expand_dims(args.target_rev, axis=-1)
+    assert args.target.ndim == 2
+    assert args.target.shape == args.target_rev.shape
+    assert args.target.shape[1] == len(args.track_index)
     # Check that there are as many track weights as tracks
     assert len(args.track_weights) == len(args.track_index)
     # Recompute weights to take track_weights into account
@@ -997,8 +1000,6 @@ def main(args: argparse.Namespace) -> None:
             return_index=True,
             flanks=flanks,
         )
-        if len(args.track_index) == 1:
-            res = np.expand_dims(res, axis=-1)
         return res
 
     # Extract flanking sequences
