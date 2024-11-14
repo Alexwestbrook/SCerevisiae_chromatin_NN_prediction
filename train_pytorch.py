@@ -585,7 +585,7 @@ def test(
 
 
 def main(args: argparse.Namespace) -> None:
-    training_dataRAM = SequenceDatasetRAM(
+    training_data = SequenceDatasetRAM(
         args.fasta_file,
         args.label_files,
         args.chrom_train,
@@ -597,7 +597,7 @@ def main(args: argparse.Namespace) -> None:
         removeNs=args.removeNs,
         transform=utils.idx_to_onehot,
     )
-    valid_dataRAM = SequenceDatasetRAM(
+    valid_data = SequenceDatasetRAM(
         args.fasta_file,
         args.label_files,
         args.chrom_valid,
@@ -610,23 +610,23 @@ def main(args: argparse.Namespace) -> None:
         transform=utils.idx_to_onehot,
     )
     if args.balance:
-        print("label range: ", training_dataRAM.label_ranges)
+        print("label range: ", training_data.label_ranges)
 
         def collate_fn(batch):
             return collate_samplebalance(
-                batch, args.n_class, training_dataRAM.label_ranges
+                batch, args.n_class, training_data.label_ranges
             )
     else:
         collate_fn = None
-    train_dataloaderRAM = DataLoader(
-        training_dataRAM,
+    train_dataloader = DataLoader(
+        training_data,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=collate_fn,
     )
-    valid_dataloaderRAM = DataLoader(
-        valid_dataRAM,
+    valid_dataloader = DataLoader(
+        valid_data,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
@@ -644,32 +644,63 @@ def main(args: argparse.Namespace) -> None:
         f.write(
             "epoch\ttrain_loss\tvalid_loss\tvalid_loss_bytrack\tvalid_cor_bytrack\n"
         )
+    size = len(train_dataloader.dataset)
+    if args.max_train:
+        size = min(size, len(next(iter(train_dataloader))[0]) * args.max_train)
+    step = 0
+    last_val_step = 0
+    train_loss = 0
+    model.train()
     for t in range(args.epochs):
         print(f"Epoch {t+1}\n-------------------------------")
-        train_loss = train(
-            train_dataloaderRAM,
-            model,
-            args.loss_fn,
-            optimizer,
-            device=args.device,
-            max_batch_per_epoch=args.max_train,
-        )
-        valid_loss_bytrack, valid_cor_bytrack = test(
-            valid_dataloaderRAM, model, args.loss_fn, args.device, args.max_valid
-        )
-        valid_loss = valid_loss_bytrack.mean().item()
-        with open(log_file, "a") as f:
-            f.write(
-                f"{t}\t{train_loss:>8f}\t{valid_loss:>8f}\t{valid_loss_bytrack.cpu().numpy()}\t{valid_cor_bytrack.cpu().numpy()}\n"
-            )
-        if valid_loss < best_valid_loss:
-            best_valid_loss = valid_loss
-            torch.save(model.state_dict(), model_file)
-            wait = 0
-        else:
-            wait += 1
-            if wait >= args.patience:
-                break
+        for batch, (X, y, w) in enumerate(train_dataloader):
+            X, y, w = X.to(args.device), y.to(args.device), w.to(args.device)
+
+            # Compute prediction error
+            pred = model(X)
+            loss = torch_loss_bytrack(pred, y, w, args.loss_fn).mean()
+
+            # Backpropagation
+            loss.backward()
+
+            optimizer.step()
+            optimizer.zero_grad()
+
+            train_loss += loss.item()
+            if batch % 50 == 0:
+                loss, current = loss.item(), (batch + 1) * len(X)
+                print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+            step += 1
+
+            # Evaluation
+            if args.max_train and step % args.max_train:
+                train_loss /= step - last_val_step
+                print(f"Avg train loss: {train_loss:>8f} \n")
+                valid_loss_bytrack, valid_cor_bytrack = test(
+                    valid_dataloader,
+                    model,
+                    args.loss_fn,
+                    args.device,
+                    args.max_valid,
+                )
+                valid_loss = valid_loss_bytrack.mean().item()
+                with open(log_file, "a") as f:
+                    f.write(
+                        f"{t}\t{train_loss:>8f}\t{valid_loss:>8f}\t{valid_loss_bytrack.cpu().numpy()}\t{valid_cor_bytrack.cpu().numpy()}\n"
+                    )
+                # Earlystopping
+                if valid_loss < best_valid_loss:
+                    best_valid_loss = valid_loss
+                    torch.save(model.state_dict(), model_file)
+                    wait = 0
+                else:
+                    wait += 1
+                    if wait >= args.patience:
+                        break
+                # Reinitialize for training steps
+                model.train()
+                train_loss = 0
+                last_val_step = step
     print("Done!")
     print(f"Saved PyTorch Model State to {model_file}")
 

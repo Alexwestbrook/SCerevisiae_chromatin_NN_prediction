@@ -443,7 +443,6 @@ class ConvNetwork(nn.Module):
             nn.Linear(length // 4 * 64, 128),
             nn.ReLU(),
             nn.Linear(128, 1),
-            nn.Sigmoid(),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -466,7 +465,6 @@ class SiameseConvNetwork(nn.Module):
             nn.Linear(length // 4 * 64 * 2, 128),
             nn.ReLU(),
             nn.Linear(128, 1),
-            nn.Sigmoid(),
         )
 
     def forward(self, input1: torch.Tensor, input2: torch.Tensor) -> torch.Tensor:
@@ -492,7 +490,6 @@ class InceptionNetwork(nn.Module):
             nn.Linear(length // 4 * 112, 128),
             nn.ReLU(),
             nn.Linear(128, 1),
-            nn.Sigmoid(),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -515,7 +512,6 @@ class SiameseInceptionNetwork(nn.Module):
             nn.Linear(length // 4 * 112 * 2, 128),
             nn.ReLU(),
             nn.Linear(128, 1),
-            nn.Sigmoid(),
         )
 
     def forward(self, input1: torch.Tensor, input2: torch.Tensor) -> torch.Tensor:
@@ -538,4 +534,8 @@ ARCHITECTURES = {
     "OriginalBassenjiMultiNetwork2": OriginalBassenjiMultiNetwork2,
     "OriginalBassenjiMultiNetworkNoCrop": OriginalBassenjiMultiNetworkNoCrop,
     "BassenjiMultiNetworkCrop": BassenjiMultiNetworkCrop,
+    "SiameseInceptionNetwork": SiameseInceptionNetwork,
+    "InceptionNetwork": InceptionNetwork,
+    "SiameseConvNetwork": SiameseConvNetwork,
+    "ConvNetwork": ConvNetwork,
 }
