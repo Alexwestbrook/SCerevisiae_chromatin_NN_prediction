@@ -1,19 +1,20 @@
 import argparse
 import datetime
-import tempfile
 import json
 import socket
+import tempfile
 from pathlib import Path
-from typing import Callable, Tuple, Iterable
+from typing import Callable, Iterable, Tuple
 
-import numpy as np
-import utils
 import models
+import numpy as np
 import torch
-# import torcheval
+import utils
 from numpy.typing import ArrayLike
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+
+LOSSES = {"BCE": nn.BCELoss, "BCElogits": nn.BCEWithLogitsLoss}
 
 
 def parsing() -> argparse.Namespace:
@@ -29,7 +30,7 @@ def parsing() -> argparse.Namespace:
     argparse.Namespace
         Namespace with all arguments as attributes
     """
-    # Declaration of expexted arguments
+    # Declaration of expected arguments
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-d",
@@ -65,13 +66,6 @@ def parsing() -> argparse.Namespace:
         default="both",
         type=str,
     )
-    # parser.add_argument(
-    #     "-w",
-    #     "--winsize",
-    #     help="Size of the window in bp to use for prediction (default: %(default)s)",
-    #     default=2048,
-    #     type=int,
-    # )
     parser.add_argument(
         "-lr",
         "--learn_rate",
@@ -93,10 +87,6 @@ def parsing() -> argparse.Namespace:
         default=1024,
         type=int,
     )
-    # parser.add_argument(
-    #     "-ss", "--same_samples",
-    #     help="Indicates to use the same sample at each epoch",
-    #     action='store_true')
     parser.add_argument(
         "-mt",
         "--max_train",
@@ -124,12 +114,6 @@ def parsing() -> argparse.Namespace:
         help="Indicates to balance weights inside batches",
         action="store_true",
     )
-    # parser.add_argument(
-    #     "-rN",
-    #     "--removeNs",
-    #     help="Indicates to remove windows with Ns from training set",
-    #     action="store_true",
-    # )
     parser.add_argument(
         "-loss",
         "--loss_fn",
@@ -145,6 +129,12 @@ def parsing() -> argparse.Namespace:
         type=str,
     )
     # parser.add_argument(
+    #     "-rN",
+    #     "--removeNs",
+    #     help="Indicates to remove windows with Ns from training set",
+    #     action="store_true",
+    # )
+    # parser.add_argument(
     #     "-r", "--remove_indices",
     #     help="Npz archive containing indices of labels to remove from "
     #          "training set, with one array per chromosome",
@@ -155,10 +145,6 @@ def parsing() -> argparse.Namespace:
     #     help="Seed to use for random shuffling of training samples",
     #     default=None,
     #     type=int)
-    # parser.add_argument(
-    #     "-da", "--disable_autotune",
-    #     action='store_true',
-    #     help="Indicates not to use earlystopping.")
     parser.add_argument(
         "-p",
         "--patience",
@@ -194,7 +180,7 @@ class DatasetFromFiles(Dataset):
         target_transform: Callable = None,
         strand: str = "for",
         paired: bool = True,
-        rng: np.random.Generator = np.random.default_rng()
+        rng: np.random.Generator = np.random.default_rng(),
     ) -> None:
         # Passed attributes
         self.split = split
@@ -344,15 +330,11 @@ def collate_classbalance(
     tot = np.size(weight, out_type=weight.dtype)
     tot_pos = np.reduce_sum(np.where(y, weight, 0))
     tot_neg = np.reduce_sum(np.where(y, weight, 0))
-    new_weight = np.where(
-        y,
-        weight*tot / (2*tot_pos),
-        weight*tot / (2*tot_neg)
-    )
+    new_weight = np.where(y, weight * tot / (2 * tot_pos), weight * tot / (2 * tot_neg))
     return tuple(torch.tensor(x, dtype=float) for x in (seq, label, new_weight))
 
 
-def tp_fp_tn_fn(output: torch.Tensor, target: torch.Tensor, thres=.5):
+def tp_fp_tn_fn(output: torch.Tensor, target: torch.Tensor, thres=0.5):
     positives = output > thres
     target_bool = target.type(positives.dtype)
     tp = torch.sum(torch.bitwise_and(positives, target_bool))
@@ -422,19 +404,18 @@ def test(
 def main(args: argparse.Namespace) -> None:
     training_data = DatasetFromFiles(
         args.dataset_dir,
-        split='train',
+        split="train",
         strand=args.strand,
-        transform=utils.idx_to_onehot,
         paired=args.paired,
     )
     valid_data = DatasetFromFiles(
         args.dataset_dir,
-        split='valid',
+        split="valid",
         strand=args.strand,
-        transform=utils.idx_to_onehot,
         paired=args.paired,
     )
     if args.balance:
+
         def collate_fn(batch):
             return collate_classbalance(batch)
     else:
@@ -451,7 +432,7 @@ def main(args: argparse.Namespace) -> None:
     valid_dataloader = DataLoader(
         valid_data,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=args.num_workers,
     )
 
@@ -459,32 +440,38 @@ def main(args: argparse.Namespace) -> None:
     model = args.architecture().to(args.device)
     optimizer = args.optimizer_ctor(model.parameters(), args.learn_rate)
 
+    # Prepare files for logging and saving
     model_file = Path(args.output_dir, "model_state.pt")
-    best_valid_loss = np.inf
-    wait = 0
     log_file = Path(args.output_dir, "epoch_logs.csv")
     with open(log_file, "w") as f:
-        f.write(
-            "epoch\ttrain_loss\tvalid_loss\tvalid_loss_bytrack\tvalid_cor_bytrack\n"
-        )
+        f.write("epoch\tstep\ttrain_loss\ttrain_accuracy\tvalid_loss\tvalid_accuracy\n")
+    # Determine size of training dataset before running evaluation
     size = len(train_dataloader.dataset)
     if args.max_train:
-        size = min(size, len(next(iter(train_dataloader))[1]) * args.max_train)
+        size = min(size, args.batch_size * args.max_train)
+    # Initilialize counters for training steps
     step = 0
+    wait = 0
+    best_valid_loss = np.inf
     last_val_step = 0
     train_loss = 0
+    binarized_table = torch.zeros(4).to(
+        args.device
+    )  # True and False positives and negatives
     model.train()
-    binarized_table = torch.zeros(4).to(args.device)
+    # Start training
     for t in range(args.epochs):
-        print(f"Epoch {t+1}\n-------------------------------")
+        if args.verbose:
+            print(f"Epoch {t+1}\n-------------------------------")
         for batch, (X, y, w) in enumerate(train_dataloader):
-            if args.paired:
+            if args.paired:  # Extract X as a pair of tensors
                 X1, X2 = X
                 X1, X2 = X1.to(args.device), X2.to(args.device)
                 logits = model(X1, X2)
             else:
                 X = X.to(args.device)
                 logits = model(X)
+            # Reshape and type as logits
             y = torch.reshape(y, logits.shape).type(logits.dtype).to(args.device)
             w = torch.reshape(w, logits.shape).type(logits.dtype).to(args.device)
             # Compute loss
@@ -492,35 +479,40 @@ def main(args: argparse.Namespace) -> None:
 
             # Backpropagation
             loss.backward()
-
             optimizer.step()
             optimizer.zero_grad()
-
             train_loss += loss.item()
-            # save binarized predictions for computing accuracy
-            binarized_table += tp_fp_tn_fn(nn.Sigmoid()(logits), y)
-            if batch % 50 == 0:
+
+            if batch % 50 == 0:  # Show progress
                 loss, current = loss.item(), (batch + 1) * len(y)
-                print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+                print(
+                    f"loss: {loss:>7f}  [{current:>5d}/{last_val_step*len(y)+size:>5d}]"
+                )
+            # Update counters
+            binarized_table += tp_fp_tn_fn(nn.Sigmoid()(logits), y)
             step += 1
 
-            # Evaluation
+            # Evaluation after fixed number of steps
             if args.max_train and step % args.max_train == 0:
                 train_loss /= step - last_val_step
-                train_acc = accuracy(*binarized_table)
-                print(f"Avg train loss: {train_loss:>8f} \n")
+                train_acc = accuracy(*binarized_table).cpu().numpy()
+                if args.verbose:
+                    print(
+                        f"Avg train loss: {train_loss:>8f}\tAvg train accuracy: {train_acc:>8f}\n"
+                    )
                 valid_loss, valid_acc = test(
                     valid_dataloader,
                     model,
                     args.loss_fn,
                     args.device,
                     args.max_valid,
-                    args.paired
+                    args.paired,
                 )
                 valid_loss = valid_loss.mean().item()
+                valid_acc = valid_acc.cpu().numpy()
                 with open(log_file, "a") as f:
                     f.write(
-                        f"{t}\t{train_loss:>8f}\t{train_acc.cpu().numpy():>8f}\t{valid_loss:>8f}\t{valid_acc.cpu().numpy()}\n"
+                        f"{t}\t{step}\t{train_loss:>8f}\t{train_acc:>8f}\t{valid_loss:>8f}\t{valid_acc}\n"
                     )
                 # Earlystopping
                 if valid_loss < best_valid_loss:
@@ -532,12 +524,52 @@ def main(args: argparse.Namespace) -> None:
                     if wait >= args.patience:
                         break
                 # Reinitialize for training steps
-                model.train()
+                last_val_step = step
                 train_loss = 0
                 binarized_table = torch.zeros(4).to(args.device)
-                last_val_step = step
-    print("Done!")
-    print(f"Saved PyTorch Model State to {model_file}")
+                model.train()
+        # Propagate Earlystopping
+        if wait >= args.patience:
+            break
+        # Evaluation after an epoch
+        if not args.max_train:
+            train_loss /= step - last_val_step
+            train_acc = accuracy(*binarized_table).cpu().numpy()
+            if args.verbose:
+                print(
+                    f"Avg train loss: {train_loss:>8f}\tAvg train accuracy: {train_acc:>8f}\n"
+                )
+            valid_loss, valid_acc = test(
+                valid_dataloader,
+                model,
+                args.loss_fn,
+                args.device,
+                args.max_valid,
+                args.paired,
+            )
+            valid_loss = valid_loss.mean().item()
+            valid_acc = valid_acc.cpu().numpy()
+            with open(log_file, "a") as f:
+                f.write(
+                    f"{t}\t{step}\t{train_loss:>8f}\t{train_acc:>8f}\t{valid_loss:>8f}\t{valid_acc}\n"
+                )
+            # Earlystopping
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                torch.save(model.state_dict(), model_file)
+                wait = 0
+            else:
+                wait += 1
+                if wait >= args.patience:
+                    break
+            # Reinitialize for training steps
+            last_val_step = step
+            train_loss = 0
+            binarized_table = torch.zeros(4).to(args.device)
+            model.train()
+    if args.verbose:
+        print("Done!")
+        print(f"Saved PyTorch Model State to {model_file}")
 
 
 if __name__ == "__main__":
@@ -572,11 +604,7 @@ if __name__ == "__main__":
         f.write("\n")
     # Convert to non json serializable objects
     args.architecture = models.ARCHITECTURES[args.architecture]
-    losses = {
-        "BCE": nn.BCELoss,
-        "BCElogits": nn.BCEWithLogitsLoss
-    }
-    args.loss_fn = losses[args.loss_fn]
+    args.loss_fn = LOSSES[args.loss_fn]
     optimizer_ctors = {"adam": torch.optim.Adam}
     args.optimizer_ctor = optimizer_ctors[args.optimizer_ctor]
 

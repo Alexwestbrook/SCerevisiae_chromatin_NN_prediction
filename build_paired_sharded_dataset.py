@@ -14,7 +14,10 @@
 # - directory : path of the directory to store the dataset files in
 
 import argparse
+import datetime
 import gzip
+import json
+import socket
 from itertools import repeat
 from pathlib import Path
 
@@ -30,27 +33,6 @@ def parsing():
     Arguments
     ---------
     python command-line
-
-    Returns
-    -------
-    ip_file_pair : List[str]
-        Paired-end fastq files containing ip reads
-    ctrl_file_pair : List[str]
-        Paired-end fastq files containing control reads
-    output: str
-        Path to the output directory and file name
-    read_length : int
-        Number of bases in reads. If unspecified, the read length is inferred
-        from the maximum length in the first 100 sequences from each file. All
-        reads will be truncated or extended with N values to fit this length.
-    split_sizes : tuple[int], default=[2**23, 2**23]
-        Number of test and valid samples in this order, remaining samples are
-        train samples. Set value to 0 to ignore a split.
-    shard_size : int, default=2**24
-        Number of reads in a shard
-    dN : bool, default=False
-        If True, reads with N values are discarded, as well as reads shorter
-        than `read_length`.
     """
     # Declaration of expexted arguments
     parser = argparse.ArgumentParser()
@@ -71,7 +53,7 @@ def parsing():
         required=True,
     )
     parser.add_argument(
-        "-out", "--out_dir", help="output dataset directory", type=str, required=True
+        "-o", "--output_dir", help="output dataset directory", type=str, required=True
     )
     parser.add_argument(
         "-rl",
@@ -196,11 +178,12 @@ def parse_paired_fastq(filenames, discardN=False, read_length=None):
 def process_fastq_and_save(
     ip_file_pair,
     ctrl_file_pair,
-    out_dir,
+    output_dir,
     shard_size=2**24,
     split_sizes=[2**23, 2**23],
     read_length=None,
     discardN=False,
+    log_file=None,
 ):
     """
     Read multiple fastq files and convert them into a sharded numpy dataset.
@@ -217,7 +200,7 @@ def process_fastq_and_save(
         Paired-end fastq files containing ip reads
     ctrl_file_pair : List[str]
         Paired-end fastq files containing control reads
-    out_dir : str
+    output_dir : str
         Name of the output dataset directory, must be empty
     shard_size : int, default=2**24
         Number of reads in a shard
@@ -229,8 +212,10 @@ def process_fastq_and_save(
         the maximum length in the first 100 sequences from each file. All
         reads will be truncated or extended with N values to fit this length.
     discardN : bool, default=False
-        if True, reads with N values are discarded, as well as reads shorter
+        If True, reads with N values are discarded, as well as reads shorter
         than `read_length`.
+    log_file : str, optional
+        File to print messages in
     """
 
     # helper functions
@@ -241,7 +226,7 @@ def process_fastq_and_save(
             shard = [read + "N" * (read_length - len(read)) for read in shard]
         reads = np.stack(utils.ordinal_encoder(shard)).reshape(-1, 2, read_length)
         np.savez_compressed(
-            Path(out_dir, f"{cur_split}_{cur_shard}"), ids=ids, reads=reads
+            Path(output_dir, f"{cur_split}_{cur_shard}"), ids=ids, reads=reads
         )
 
     def get_split_iterators():
@@ -260,10 +245,15 @@ def process_fastq_and_save(
         yield repeat(shard_size)
 
     # Build output directory if needed
-    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Infer read length from first 300 sequences in each file
     if read_length is None:
+        if log_file:
+            with open(log_file, "a") as f:
+                f.write(
+                    "read length is unspecified, inferring read length from files\n"
+                )
         print("read length is unspecified, inferring read length from files")
         read_length = 0
         for i, reads in enumerate(
@@ -272,7 +262,10 @@ def process_fastq_and_save(
             if i > 100:
                 break
             read_length = max(read_length, max(len(read.seq) for read in reads))
-        print("read length is", read_length)
+        if log_file:
+            with open(log_file, "a") as f:
+                f.write(f"read length is {read_length}\n")
+        print(f"read length is {read_length}")
 
     # Handle train-valid-test splits
     splits = zip(["test", "valid", "train"], get_split_iterators())
@@ -316,5 +309,37 @@ def process_fastq_and_save(
 
 
 if __name__ == "__main__":
+    tmstmp = datetime.datetime.now()
+    # Get arguments
     args = parsing()
-    process_fastq_and_save(**vars(args))
+
+    # Build output directory
+    Path(args.output_dir).mkdir(parents=True, exist_ok=False)
+    # Store arguments in config file
+    config_file = utils.safe_filename(Path(args.output_dir, "config.json"))
+    args.log_file = str(utils.safe_filename(Path(args.output_dir, "dataset_log.txt")))
+    with open(config_file, "w") as f:
+        json.dump(
+            {
+                **vars(args),
+                **{
+                    "timestamp": str(tmstmp),
+                    "machine": socket.gethostname(),
+                },
+            },
+            f,
+            indent=4,
+        )
+        f.write("\n")
+    # Convert to non json serializable objects
+
+    # Start computations, save total time even if there was a failure
+    try:
+        process_fastq_and_save(**vars(args))
+    except:
+        with open(args.log_file, "w") as f:
+            f.write("Aborted\n")
+            f.write(f"total time: {datetime.datetime.now() - tmstmp}\n")
+        raise
+    with open(args.log_file, "w") as f:
+        f.write(f"total time: {datetime.datetime.now() - tmstmp}\n")
