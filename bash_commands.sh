@@ -790,25 +790,113 @@
 #     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
 
 
-for gc in 0.2 0.3 0.4 0.5 0.6 0.7
-do
-    python kMC_sequence_design_pytorch.py \
-        -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/2kb_regnuc_10seq_flanksInt2_globalgc$gc'_'nrl167 \
-        -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nuc_pt8/model_state.pt \
-        -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
-        -n 10 -l 2000 \
-        --flanks /home/alex/shared_folder/SCerevisiae/data/S288c_siteManon_Int2_1kbflanks_ACGTidx.npz \
-        -ilen 0 -per 167 -plen 147 -pshape gaussian \
-        -gctol 0.01 -gclen 4000 -targ_gc $gc \
-        --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+# for gc in 0.2 0.3 0.4 0.5 0.6 0.7
+# do
+#     python kMC_sequence_design_pytorch.py \
+#         -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/2kb_regnuc_10seq_flanksInt2_globalgc$gc'_'nrl167 \
+#         -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nuc_pt8/model_state.pt \
+#         -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#         -n 10 -l 2000 \
+#         --flanks /home/alex/shared_folder/SCerevisiae/data/S288c_siteManon_Int2_1kbflanks_ACGTidx.npz \
+#         -ilen 0 -per 167 -plen 147 -pshape gaussian \
+#         -gctol 0.01 -gclen 4000 -targ_gc $gc \
+#         --steps 1000 -t 0.0001 -s 16 --seed 0 -v
     
-    python kMC_sequence_design_pytorch.py \
-        -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/2kb_regnuc_10seq_flanksInt2_globalgc$gc'_'nrl167_gcwgt5 \
-        -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nuc_pt8/model_state.pt \
-        -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
-        -n 10 -l 2000 \
-        --flanks /home/alex/shared_folder/SCerevisiae/data/S288c_siteManon_Int2_1kbflanks_ACGTidx.npz \
-        -ilen 0 -per 167 -plen 147 -pshape gaussian \
-        -gctol 0.01 -gclen 4000 -targ_gc $gc --weights 5 1 1 1 \
-        --steps 1000 -t 0.0001 -s 16 --seed 0 -v
-done
+#     python kMC_sequence_design_pytorch.py \
+#         -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/2kb_regnuc_10seq_flanksInt2_globalgc$gc'_'nrl167_gcwgt5 \
+#         -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nuc_pt8/model_state.pt \
+#         -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#         -n 10 -l 2000 \
+#         --flanks /home/alex/shared_folder/SCerevisiae/data/S288c_siteManon_Int2_1kbflanks_ACGTidx.npz \
+#         -ilen 0 -per 167 -plen 147 -pshape gaussian \
+#         -gctol 0.01 -gclen 4000 -targ_gc $gc --weights 5 1 1 1 \
+#         --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+# done
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb_regnuc_lowpol_10seq_randomflanks \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_regnuc.npz \
+#     -nt 2 -track 0 1 -twgt 1 1 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb_regnuc_lowpol_10seq_randomflanks_nrl197 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_regnuc_nrl197.npz \
+#     -nt 2 -track 0 1 -twgt 1 1 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb_nucNDR_lowpol_10seq_randomflanks_nrl167_NDR200 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_nucNDR200.npz \
+#     -nt 2 -track 0 1 -twgt 1 1 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb_nucNDR_lowpol_10seq_randomflanks_nrl167_NDR300 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_nucNDR300.npz \
+#     -nt 2 -track 0 1 -twgt 1 1 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb_regnuc_lowpol_10seq_randomflanks_nrl171 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_regnuc_nrl171.npz \
+#     -nt 2 -track 0 1 -twgt 1 1 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb_nucNDR_lowpol_10seq_randomflanks_nrl171_NDR250 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_nucNDR250_nrl171.npz \
+#     -nt 2 -track 0 1 -twgt 1 1 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb_nucNDR_lowpol_10seq_randomflanks_nrl167_NDR250 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_nucNDR250.npz \
+#     -nt 2 -track 0 1 -twgt 1 1 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
+
+# python kMC_sequence_design_pytorch.py \
+#     -o /home/alex/SCerevisiae_chromatin_NN_prediction/generated/4kb_nucNDR_lowpol_10seq_randomflanks_nrl167_NDR350 \
+#     -m /home/alex/SCerevisiae_chromatin_NN_prediction/Trainedmodels/model_myco_nucpol_pt8/model_state.pt \
+#     -w 2048 -h_int 16 -arch BassenjiMultiNetwork2 -mid -b 1024 \
+#     -n 10 -l 4000 -kfile /home/alex/shared_folder/SCerevisiae/genome/W303/W303_3mer_freq.csv \
+#     --flanks random \
+#     --target_file /home/alex/SCerevisiae_chromatin_NN_prediction/generated/target4kb_lowpol_nucNDR350.npz \
+#     -nt 2 -track 0 1 -twgt 1 1 \
+#     -gctol 0.01 -gclen 100 \
+#     --steps 1000 -t 0.0001 -s 16 --seed 0 -v
