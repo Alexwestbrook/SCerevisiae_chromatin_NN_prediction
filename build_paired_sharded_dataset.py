@@ -337,9 +337,9 @@ if __name__ == "__main__":
     try:
         process_fastq_and_save(**vars(args))
     except:
-        with open(args.log_file, "w") as f:
+        with open(args.log_file, "a") as f:
             f.write("Aborted\n")
             f.write(f"total time: {datetime.datetime.now() - tmstmp}\n")
         raise
-    with open(args.log_file, "w") as f:
+    with open(args.log_file, "a") as f:
         f.write(f"total time: {datetime.datetime.now() - tmstmp}\n")
