@@ -23,7 +23,7 @@ def ordinal_encoder(
     elif isinstance(inp, dict):
         seqs = list(inp.values())
     else:
-        seqs = inp
+        seqs = [inp]
     # Encode sequences
     encoder = OrdinalEncoder(
         handle_unknown="use_encoded_value", unknown_value=4, dtype=np.int8
@@ -368,10 +368,12 @@ def smooth(values, window_size, mode="linear", sigma=1, padding="same"):
     return convolve(values, box, mode=padding)
 
 
-def masked_convolve(in1, in2, correct_missing=True, norm=True, valid_ratio=1./3., *args, **kwargs):
-    """A workaround for np.ma.MaskedArray in scipy.signal.convolve. 
+def masked_convolve(
+    in1, in2, correct_missing=True, norm=True, valid_ratio=1.0 / 3.0, *args, **kwargs
+):
+    """A workaround for np.ma.MaskedArray in scipy.signal.convolve.
     It converts the masked values to complex values=1j. The complex space allows to set a limit
-    for the imaginary convolution. The function use a ratio `valid_ratio` of np.sum(in2) to 
+    for the imaginary convolution. The function use a ratio `valid_ratio` of np.sum(in2) to
     set a lower limit on the imaginary part to mask the values.
     I.e. in1=[[1.,1.,--,--]] in2=[[1.,1.]] -> imaginary_part/sum(in2): [[1., 1., .5, 0.]]
     -> valid_ratio=.5 -> out:[[1., 1., .5, --]].
@@ -383,7 +385,7 @@ def masked_convolve(in1, in2, correct_missing=True, norm=True, valid_ratio=1./3.
     in2 : array_like
         Second input. Should have the same number of dimensions as `in1`.
     correct_missing : bool, optional
-        correct the value of the convolution as a sum over valid data only, 
+        correct the value of the convolution as a sum over valid data only,
         as masked values account 0 in the real space of the convolution.
     norm : bool, optional
         if the output should be normalized to np.sum(in2).
@@ -391,36 +393,41 @@ def masked_convolve(in1, in2, correct_missing=True, norm=True, valid_ratio=1./3.
         the upper limit of the imaginary convolution to mask values. Defined by the ratio of np.sum(in2).
     *args, **kwargs: optional
         passed to scipy.signal.convolve(..., *args, **kwargs)
-    
+
     Reference:
     https://stackoverflow.com/a/72855832
     """
     if not isinstance(in1, np.ma.MaskedArray):
         in1 = np.ma.array(in1)
-    
+
     # np.complex128 -> stores real as np.float64
-    con = scipy.signal.convolve(in1.astype(np.complex128).filled(fill_value=1j), 
-                                in2.astype(np.complex128), 
-                                *args, **kwargs)
-    
+    con = scipy.signal.convolve(
+        in1.astype(np.complex128).filled(fill_value=1j),
+        in2.astype(np.complex128),
+        *args,
+        **kwargs,
+    )
+
     # split complex128 to two float64s
     con_imag = con.imag
     con = con.real
-    mask = np.abs(con_imag/np.sum(in2)) > valid_ratio
-    
+    mask = np.abs(con_imag / np.sum(in2)) > valid_ratio
+
     # con_east.real / (1. - con_east.imag): correction, to get the mean over all valid values
     # con_east.imag > percent: how many percent of the single convolution value have to be from valid values
     if correct_missing:
         correction = np.sum(in2) - con_imag
-        con[correction!=0] *= np.sum(in2)/correction[correction!=0]
-        
+        con[correction != 0] *= np.sum(in2) / correction[correction != 0]
+
     if norm:
         con /= np.sum(in2)
-        
+
     return np.ma.array(con, mask=mask)
 
 
-def nan_smooth(values, window_size, mode="linear", sigma=1, padding="same", pad_masked=False):
+def nan_smooth(
+    values, window_size, mode="linear", sigma=1, padding="same", pad_masked=False
+):
     if mode == "linear":
         box = np.ones(window_size) / window_size
     elif mode == "gaussian":
@@ -439,18 +446,23 @@ def nan_smooth(values, window_size, mode="linear", sigma=1, padding="same", pad_
         raise NameError("Invalid mode")
     values = np.ma.array(values, mask=~np.isfinite(values))
     if pad_masked:
-        if padding == 'same':
+        if padding == "same":
             left_size = window_size // 2
-            right_size = (window_size-1) // 2
-        elif padding == 'full':
+            right_size = (window_size - 1) // 2
+        elif padding == "full":
             left_size = window_size - 1
             right_size = window_size - 1
-        values = np.ma.concatenate([
-            np.ma.masked_all(left_size, dtype=values.dtype),
-            values,
-            np.ma.masked_all(right_size, dtype=values.dtype)])
-        padding = 'valid'
-    return masked_convolve(values, box, valid_ratio=(window_size-1)/window_size, mode=padding).filled(fill_value=np.nan)
+        values = np.ma.concatenate(
+            [
+                np.ma.masked_all(left_size, dtype=values.dtype),
+                values,
+                np.ma.masked_all(right_size, dtype=values.dtype),
+            ]
+        )
+        padding = "valid"
+    return masked_convolve(
+        values, box, valid_ratio=(window_size - 1) / window_size, mode=padding
+    ).filled(fill_value=np.nan)
 
 
 def sliding_window_view(x, window_shape, axis=None, *, subok=False, writeable=False):
