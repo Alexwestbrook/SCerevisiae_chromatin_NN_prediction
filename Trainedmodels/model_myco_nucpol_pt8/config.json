@@ -1,0 +1,48 @@
+{
+    "fasta_file": "/home/alex/shared_folder/SCerevisiae/genome/W303_Mmmyco.fa",
+    "label_files": [
+        "/home/alex/shared_folder/SCerevisiae/data/labels_myco_nuc.bw",
+        "/home/alex/shared_folder/SCerevisiae/data/GSE217022/labels_myco_pol_ratio.bw"
+    ],
+    "output_dir": "model_myco_nucpol_pt8",
+    "architecture": "BassenjiMultiNetwork2",
+    "chrom_train": [
+        "chrI",
+        "chrII",
+        "chrIII",
+        "chrIV",
+        "chrV",
+        "chrVI",
+        "chrVII",
+        "chrVIII",
+        "chrIX",
+        "chrX",
+        "chrXI",
+        "chrXII",
+        "chrXIII"
+    ],
+    "chrom_valid": [
+        "chrXIV",
+        "chrXV"
+    ],
+    "strand": "both",
+    "winsize": 2048,
+    "head_interval": 16,
+    "learn_rate": 0.001,
+    "epochs": 100,
+    "batch_size": 1024,
+    "max_train": 256,
+    "max_valid": 64,
+    "num_workers": 4,
+    "balance": true,
+    "n_class": 100,
+    "remove0s": true,
+    "removeNs": true,
+    "loss_fn": "mae_cor",
+    "optimizer_ctor": "adam",
+    "patience": 6,
+    "verbose": true,
+    "device": "cuda",
+    "timestamp": "2024-06-12 16:20:04.571959",
+    "machine": "7196jm23lnx2"
+}
